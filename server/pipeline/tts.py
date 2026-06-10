@@ -47,8 +47,8 @@ class CSMSynthesizer:
                  max_context_audio_s: float = 3.0):
         self.max_context_audio_s = max_context_audio_s
         if local_files_only:
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
-            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
         from transformers import AutoProcessor, CsmForConditionalGeneration
 

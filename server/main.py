@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import pathlib
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -43,6 +44,9 @@ tts: CSMSynthesizer | None = None
 async def startup() -> None:
     global asr, llm, tts
     log.info("=== voice_assistant_v2 booting ===")
+    if getattr(cfg.tts, "local_files_only", False):
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
     asr = WhisperASR(
         model=cfg.asr.model, device=cfg.asr.device,
         compute_type=cfg.asr.compute_type,

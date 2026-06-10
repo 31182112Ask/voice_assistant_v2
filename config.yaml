@@ -30,8 +30,8 @@ vad:
 
 asr:
   model: "small"                # tiny / base / small / medium / large-v3-turbo
-  device: "cpu"                 # cpu 省 VRAM; 改 "cuda" 更快但佔 ~0.9GB
-  compute_type: "int8"          # cpu→int8 / cuda→float16
+  device: "cuda"                # GPU ASR: 1.8s 語音實測可由秒級降到數百毫秒
+  compute_type: "float16"       # cpu→int8 / cuda→float16
   language: null                # null = 自動偵測; 可設 "en" / "zh"
   beam_size: 1                  # 貪心解碼, 對話場景準確率幾乎無損, 提速 ~30-40%
   warmup: true                  # 預熱已加 try/except 保護, 不會再導致啟動崩潰
@@ -41,7 +41,7 @@ llm:
   base_url: "http://127.0.0.1:11434"
   model: "qwen3.5:2b"           # 本機已安裝; 低佔用，適合 8GB VRAM 與 CSM 並行
   think: false                  # 關閉推理模型的 thinking 欄位，確保語音回答進 content
-  num_gpu: 0                    # LLM 放 CPU，GPU 優先留給 CSM-1B
+  num_gpu: 999                  # 2B LLM 全放 GPU; 仍保留足夠 VRAM 給 CSM + ASR
   keep_alive: -1                # 常駐內存, 杜絕 Ollama 5 分鐘後卸載→下一輪重載數秒的隨機高延遲
   # 若想完全不佔 GPU: 在啟動 Ollama 前設 OLLAMA_NUM_GPU=0 (純 CPU, 64GB RAM 無壓力)
   max_tokens: 150               # 語音對話保持簡短 (越短整輪越快)
