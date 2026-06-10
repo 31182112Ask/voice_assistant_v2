@@ -24,6 +24,7 @@ class OllamaLLM:
                  max_tokens: int, temperature: float,
                  think: bool | None = None,
                  num_gpu: int | None = None,
+                 num_batch: int | None = None,
                  keep_alive: int | str | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -32,8 +33,20 @@ class OllamaLLM:
         self.temperature = temperature
         self.think = think
         self.num_gpu = num_gpu
+        self.num_batch = num_batch
         self.keep_alive = keep_alive
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5))
+
+    def _options(self, num_predict: int | None = None) -> dict:
+        options = {
+            "num_predict": self.max_tokens if num_predict is None else num_predict,
+            "temperature": self.temperature,
+        }
+        if self.num_gpu is not None:
+            options["num_gpu"] = self.num_gpu
+        if self.num_batch is not None:
+            options["num_batch"] = self.num_batch
+        return options
 
     async def warmup(self) -> None:
         """觸發 Ollama 加載模型進顯存/內存。"""
@@ -48,13 +61,8 @@ class OllamaLLM:
             "model": self.model,
             "messages": [{"role": "system", "content": self.system_prompt}, *messages],
             "stream": True,
-            "options": {
-                "num_predict": self.max_tokens,
-                "temperature": self.temperature,
-            },
+            "options": self._options(),
         }
-        if self.num_gpu is not None:
-            payload["options"]["num_gpu"] = self.num_gpu
         if self.think is not None:
             payload["think"] = self.think
         if self.keep_alive is not None:
@@ -161,10 +169,8 @@ class OllamaLLM:
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "options": {"num_predict": max_tokens},
+            "options": self._options(max_tokens),
         }
-        if self.num_gpu is not None:
-            payload["options"]["num_gpu"] = self.num_gpu
         if self.think is not None:
             payload["think"] = self.think
         if self.keep_alive is not None:

@@ -149,11 +149,34 @@ class Session:
             producer = asyncio.create_task(produce())
             try:
                 first = True
+                logged_llm_first = False
+                if getattr(pcfg, "instant_ack_enabled", False):
+                    ack = getattr(pcfg, "instant_ack_text", "Okay.").strip()
+                    if ack:
+                        got_ack_audio = False
+                        async for pcm in self.tts.synthesize_stream(
+                                ack, 0, interrupt):
+                            if interrupt.is_set():
+                                break
+                            if not got_ack_audio:
+                                got_ack_audio = True
+                                if t0 is not None:
+                                    log.info(
+                                        "[lat] FIRST AUDIO=%.0fms (instant ack)",
+                                        (time.monotonic() - t0) * 1000)
+                                await self._set_state("speaking")
+                                first = False
+                                await self.send_json(
+                                    {"type": "assistant_sentence", "text": ack})
+                            await self._send_audio(pcm)
+                        if got_ack_audio:
+                            spoken.append(ack)
                 while True:
                     sent = await queue.get()
                     if sent is None:
                         break
-                    if first and t0 is not None:
+                    if not logged_llm_first and t0 is not None:
+                        logged_llm_first = True
                         log.info("[lat] llm_first_chunk=%.0fms (%r)",
                                  (time.monotonic() - t0) * 1000, sent)
                     kwargs = {}

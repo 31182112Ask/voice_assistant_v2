@@ -59,6 +59,7 @@ async def startup() -> None:
         max_tokens=cfg.llm.max_tokens, temperature=cfg.llm.temperature,
         think=getattr(cfg.llm, "think", None),
         num_gpu=getattr(cfg.llm, "num_gpu", None),
+        num_batch=getattr(cfg.llm, "num_batch", None),
         keep_alive=getattr(cfg.llm, "keep_alive", None),
     )
     await llm.warmup()

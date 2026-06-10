@@ -5,6 +5,7 @@ venv/
 screenshots/
 latency_optimization.patch
 v3_frame_streaming.patch
+latency_benchmark.json
 voice_assistant_v2_lowlatency.zip
 voices/*.wav
 voices/*.txt

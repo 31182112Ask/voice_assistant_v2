@@ -23,8 +23,8 @@ audio:
 vad:
   threshold: 0.55               # 語音概率閾值
   min_speech_ms: 250            # 連續語音超過此時長 → 確認用戶在說話
-  min_silence_ms: 480           # 靜音超過此時長 → 判定一句話結束 (endpointing)
-  barge_in_speech_ms: 320       # AI 說話期間, 用戶連續語音超過此值 → 觸發打斷
+  min_silence_ms: 320           # 端點判定: 320ms 是 Silero 穩定性與自然停頓的折中
+  barge_in_speech_ms: 256       # AI 說話時更快接受打斷
                                 # (比 min_speech_ms 略高, 抗回聲誤觸發)
   pre_roll_ms: 240              # 語音起點前保留的緩衝, 避免吃掉首字
 
@@ -42,18 +42,14 @@ llm:
   model: "qwen3.5:2b"           # 本機已安裝; 低佔用，適合 8GB VRAM 與 CSM 並行
   think: false                  # 關閉推理模型的 thinking 欄位，確保語音回答進 content
   num_gpu: 999                  # 2B LLM 全放 GPU; 仍保留足夠 VRAM 給 CSM + ASR
+  num_batch: 128                # Ollama prompt/decode batch; RTX 4060 上首 token 約省 150-250ms
   keep_alive: -1                # 常駐內存, 杜絕 Ollama 5 分鐘後卸載→下一輪重載數秒的隨機高延遲
   # 若想完全不佔 GPU: 在啟動 Ollama 前設 OLLAMA_NUM_GPU=0 (純 CPU, 64GB RAM 無壓力)
-  max_tokens: 150               # 語音對話保持簡短 (越短整輪越快)
-  temperature: 0.8
+  max_tokens: 80                # 語音回答保持短，降低長尾生成與打斷成本
+  temperature: 0.4
   system_prompt: |
-    You are a warm, witty voice assistant in a real-time spoken conversation.
-    Keep replies short and conversational: 1-3 sentences unless asked for detail.
-    IMPORTANT: open with a very short first sentence (under 8 words), like a
-    natural spoken acknowledgment, then continue. Never use markdown, lists,
-    emoji, or stage directions. Speak naturally, like a person on the phone.
-    Reply in English (the speech model is English-only), even if the user
-    speaks another language — but you may briefly acknowledge their language.
+    Reply for real-time spoken chat. Answer directly after the system's brief
+    acknowledgment. Keep it under two short sentences. Use English. No markdown.
 
 tts:
   backend: "kyutai"             # kyutai = 幀級流式, 首音 ~0.3s (推薦) ★
@@ -63,14 +59,14 @@ tts:
                                 # 與 CSM 同用 Mimi codec、同為 transformer→
                                 # 音頻碼路線, 但原生「文本邊進/音頻邊出」
                                 # 安裝: pip install -U moshi  (bf16 ~3.5GB VRAM)
-    voice: "expresso/ex03-ex01_happy_001_channel1_334s.wav"
+    voice: "vctk/p276_023.wav"
                                 # 預置音色庫 kyutai/tts-voices (聲音嵌入模型
                                 # 未開源, 不能直接用本地 ref.wav 克隆)
     temp: 0.6
     cfg_coef: 2.0
     n_q: 16                    # 16=更低延遲/更省 VRAM; 32=最高音質
-    first_emit_frames: 2        # 攢 2 幀 (~160ms 音頻) 即發首塊
-    batch_frames: 4             # 其後每 ~320ms 聚合下發一次
+    first_emit_frames: 1        # 攢 1 幀 (~80ms 音頻) 即發首塊
+    batch_frames: 3             # 其後每 ~240ms 聚合下發一次
 
   model_id: "sesame/csm-1b"     # Sesame 官方開源權重 (需在 HF 接受授權)
   local_files_only: true        # 使用已下載的 Hugging Face 快取，部署啟動不依賴外網
@@ -91,6 +87,8 @@ tts:
                                 #   過長會直接拖慢每個 TTS 塊
 
 pipeline:
+  instant_ack_enabled: true
+  instant_ack_text: "Okay."
   first_chunk_max_words: 5      # 首塊最多單詞數: LLM 流一湊夠這麼多詞(或先遇到
                                 # 逗號/句號)立刻送 CSM 合成 → 首音延遲由
                                 # 「整句生成時間」降為「~1 秒音頻的生成時間」

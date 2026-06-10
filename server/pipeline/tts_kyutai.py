@@ -46,7 +46,8 @@ class KyutaiTTS:
                  n_q: int = 16, first_emit_frames: int = 2,
                  batch_frames: int = 4, local_files_only: bool = False):
         if local_files_only:
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
         try:
             from moshi.models.loaders import CheckpointInfo
