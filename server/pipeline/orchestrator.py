@@ -124,6 +124,14 @@ class Session:
             pcfg = getattr(self.cfg, "pipeline", None)
             max_w = getattr(pcfg, "first_chunk_max_words", 9) if pcfg else 9
             min_w = getattr(pcfg, "first_chunk_min_words", 2) if pcfg else 2
+            first_history = (
+                getattr(pcfg, "first_chunk_history_context", False)
+                if pcfg else False
+            )
+            vcfg = getattr(self.cfg.tts, "voice_prompt", None)
+            voice_every_chunk = (
+                getattr(vcfg, "every_chunk", True) if vcfg else True
+            )
 
             async def produce() -> None:
                 try:
@@ -143,7 +151,11 @@ class Session:
                     if first and t0 is not None:
                         log.info("[lat] llm_first_chunk=%.0fms (%r)",
                                  (time.monotonic() - t0) * 1000, sent)
-                    wav = await self.tts.synthesize(sent, 0, interrupt)
+                    wav = await self.tts.synthesize(
+                        sent, 0, interrupt,
+                        use_voice_prompt=(first or voice_every_chunk),
+                        use_history_context=(first_history if first else True),
+                    )
                     if wav is None:  # 被打斷
                         break
                     if first:

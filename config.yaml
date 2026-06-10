@@ -63,20 +63,24 @@ tts:
   compile_decoder: true         # torch.compile 解碼器, 實測可達實時的關鍵優化
   max_audio_len_ms: 15000       # 單句最長音頻
   context_turns: 1              # 韻律上下文輪數 (1 = 延遲優先; 2 = 自然度優先)
-  max_context_audio_s: 3.0      # 單條上下文音頻最長保留秒數 (截尾), 控制 prefill
+  max_context_audio_s: 1.5      # 單條上下文音頻最長保留秒數 (截尾), 控制 prefill
   voice_prompt:                 # 參考音色 (CSM 基座無固定音色, 用參考音頻錨定)
     enabled: true               # 將 wav + 文本放入 voices/ 後設為 true
     wav: "voices/ref.wav"
     text: "voices/ref.txt"
     speaker_id: 0
+    max_prompt_s: 3.0           # voice prompt 載入時自動截短; 3s 是延遲/音色折中
+    every_chunk: false          # 首塊用 voice prompt; 後續塊用上一塊音頻延續音色
                                 # ⚠ ref.wav 建議 ≤5 秒: 它會作為每一句合成的前綴,
                                 #   過長會直接拖慢每個 TTS 塊
 
 pipeline:
-  first_chunk_max_words: 9      # 首塊最多單詞數: LLM 流一湊夠這麼多詞(或先遇到
+  first_chunk_max_words: 5      # 首塊最多單詞數: LLM 流一湊夠這麼多詞(或先遇到
                                 # 逗號/句號)立刻送 CSM 合成 → 首音延遲由
                                 # 「整句生成時間」降為「~1 秒音頻的生成時間」
-  first_chunk_min_words: 2      # 首塊至少詞數 (2 = 允許 "Good question," 這類自然開場白)
+  first_chunk_min_words: 1      # 首塊至少詞數 (1 = 允許 "Yes," / "Sure," 立即開播)
+  first_chunk_history_context: false
+                                # 首塊不帶歷史音頻上下文, 只保留 voice prompt 錨定音色
 
 conversation:
   max_history_turns: 12         # 文本歷史輪數上限

@@ -100,6 +100,13 @@ class CSMSynthesizer:
                 from ..utils.audio import resample_linear
                 audio = resample_linear(audio, sr, SAMPLE_RATE)
             text = txt_path.read_text(encoding="utf-8").strip()
+            max_prompt_s = float(getattr(cfg, "max_prompt_s", 0) or 0)
+            if max_prompt_s > 0:
+                cap = int(max_prompt_s * SAMPLE_RATE)
+                if len(audio) > cap:
+                    audio = audio[:cap]
+                    text = " ".join(
+                        text.split()[: max(1, int(max_prompt_s * 3.2))])
             self._voice_prompt = (int(cfg.speaker_id), text, audio)
             vp_s = len(audio) / SAMPLE_RATE
             log.info("Voice prompt loaded: %s (%.1fs)", wav_path.name, vp_s)
@@ -112,16 +119,19 @@ class CSMSynthesizer:
 
     def _warmup(self) -> None:
         ev = threading.Event()
-        self._generate_sync("Warm up.", speaker_id=0, interrupt=ev, use_context=False)
+        self._generate_sync(
+            "Warm up.", speaker_id=0, interrupt=ev,
+            use_voice_prompt=False, use_history_context=False)
 
     # ------------------------------------------------------------------
     def _build_conversation(self, text: str, speaker_id: int,
-                            use_context: bool) -> list[dict]:
+                            use_voice_prompt: bool,
+                            use_history_context: bool) -> list[dict]:
         conv: list[dict] = []
         items: list[tuple[int, str, np.ndarray]] = []
-        if use_context:
-            if self._voice_prompt is not None:
-                items.append(self._voice_prompt)
+        if use_voice_prompt and self._voice_prompt is not None:
+            items.append(self._voice_prompt)
+        if use_history_context:
             items.extend(self._context)
         for spk, t, audio in items:
             conv.append({
@@ -137,14 +147,16 @@ class CSMSynthesizer:
 
     def _generate_sync(self, text: str, speaker_id: int,
                        interrupt: threading.Event,
-                       use_context: bool = True) -> np.ndarray | None:
+                       use_voice_prompt: bool = True,
+                       use_history_context: bool = True) -> np.ndarray | None:
         from transformers import StoppingCriteriaList
 
         with self._lock:
             if interrupt.is_set():
                 return None
             t_start = __import__("time").monotonic()
-            conv = self._build_conversation(text, speaker_id, use_context)
+            conv = self._build_conversation(
+                text, speaker_id, use_voice_prompt, use_history_context)
             inputs = self.processor.apply_chat_template(
                 conv, tokenize=True, return_dict=True,
             ).to(self.device)
@@ -179,10 +191,13 @@ class CSMSynthesizer:
 
     # ------------------------------------------------------------------
     async def synthesize(self, text: str, speaker_id: int,
-                         interrupt: threading.Event) -> np.ndarray | None:
+                         interrupt: threading.Event,
+                         use_voice_prompt: bool = True,
+                         use_history_context: bool = True) -> np.ndarray | None:
         """合成一句話。返回 float32 24kHz; 被打斷時返回 None。"""
         wav = await asyncio.to_thread(
-            self._generate_sync, text, speaker_id, interrupt)
+            self._generate_sync, text, speaker_id, interrupt,
+            use_voice_prompt, use_history_context)
         if wav is not None:
             self._context.append((speaker_id, text, self._cap(wav)))
         return wav
