@@ -24,6 +24,7 @@ REQUIRED_MODULES = [
     "numpy",
     "torch",
     "torchaudio",
+    "moshi",
 ]
 
 
@@ -49,7 +50,8 @@ def main() -> None:
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"LLM: {cfg.llm.model} at {cfg.llm.base_url}")
-    print(f"TTS: {cfg.tts.model_id} local_files_only={cfg.tts.local_files_only}")
+    print(f"TTS backend: {getattr(cfg.tts, 'backend', 'csm')}")
+    print(f"CSM: {cfg.tts.model_id} local_files_only={cfg.tts.local_files_only}")
     print("Deployment prerequisites: OK")
 
 

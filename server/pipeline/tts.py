@@ -40,6 +40,8 @@ class _InterruptCriteria:
 
 
 class CSMSynthesizer:
+    supports_csm_context = True  # orchestrator 據此決定是否傳上下文參數
+
     def __init__(self, model_id: str, device: str, dtype: str,
                  compile_decoder: bool, max_audio_len_ms: int,
                  context_turns: int, voice_prompt_cfg, root: pathlib.Path,
@@ -201,6 +203,18 @@ class CSMSynthesizer:
         if wav is not None:
             self._context.append((speaker_id, text, self._cap(wav)))
         return wav
+
+    async def synthesize_stream(self, text: str, speaker_id: int,
+                                interrupt: threading.Event, **kwargs):
+        """統一流式接口 (與 KyutaiTTS 對齊)。
+
+        注意: transformers 的 CSM 實現無法在生成中途取出音頻
+        (上游限制), 所以這裡是「塊級」流: 整塊生成完才產出。
+        要真正的幀級低延遲請在 config.yaml 切 tts.backend: kyutai。
+        """
+        wav = await self.synthesize(text, speaker_id, interrupt, **kwargs)
+        if wav is not None:
+            yield wav
 
     def add_user_context(self, text: str, audio_16k: np.ndarray) -> None:
         """把用戶語音也放入韻律上下文 (speaker 1), 讓 AI 回應的語氣呼應用戶。"""

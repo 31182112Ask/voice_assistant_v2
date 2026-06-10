@@ -56,6 +56,22 @@ llm:
     speaks another language — but you may briefly acknowledge their language.
 
 tts:
+  backend: "kyutai"             # kyutai = 幀級流式, 首音 ~0.3s (推薦) ★
+                                # csm    = Sesame CSM-1B, 韻律上下文最強但
+                                #          transformers 實現只能整塊出聲
+  kyutai:                       # —— Kyutai TTS 1.6B (Delayed Streams) ——
+                                # 與 CSM 同用 Mimi codec、同為 transformer→
+                                # 音頻碼路線, 但原生「文本邊進/音頻邊出」
+                                # 安裝: pip install -U moshi  (bf16 ~3.5GB VRAM)
+    voice: "expresso/ex03-ex01_happy_001_channel1_334s.wav"
+                                # 預置音色庫 kyutai/tts-voices (聲音嵌入模型
+                                # 未開源, 不能直接用本地 ref.wav 克隆)
+    temp: 0.6
+    cfg_coef: 2.0
+    n_q: 16                    # 16=更低延遲/更省 VRAM; 32=最高音質
+    first_emit_frames: 2        # 攢 2 幀 (~160ms 音頻) 即發首塊
+    batch_frames: 4             # 其後每 ~320ms 聚合下發一次
+
   model_id: "sesame/csm-1b"     # Sesame 官方開源權重 (需在 HF 接受授權)
   local_files_only: true        # 使用已下載的 Hugging Face 快取，部署啟動不依賴外網
   device: "cuda"

@@ -79,10 +79,15 @@ class Session:
         text = self.cfg.conversation.greeting
         self._tts_interrupt.clear()
         await self._set_state("speaking")
-        wav = await self.tts.synthesize(text, 0, self._tts_interrupt)
-        if wav is not None:
-            await self.send_json({"type": "assistant_sentence", "text": text})
-            await self._send_audio(wav)
+        got_audio = False
+        async for pcm in self.tts.synthesize_stream(
+                text, 0, self._tts_interrupt):
+            if not got_audio:
+                got_audio = True
+                await self.send_json(
+                    {"type": "assistant_sentence", "text": text})
+            await self._send_audio(pcm)
+        if got_audio:
             self.history.append({"role": "assistant", "content": text})
             await self.send_json({"type": "assistant_done"})
         # 等客戶端 playback_done 再回 listening; 兜底直接置回
@@ -151,23 +156,34 @@ class Session:
                     if first and t0 is not None:
                         log.info("[lat] llm_first_chunk=%.0fms (%r)",
                                  (time.monotonic() - t0) * 1000, sent)
-                    wav = await self.tts.synthesize(
-                        sent, 0, interrupt,
-                        use_voice_prompt=(first or voice_every_chunk),
-                        use_history_context=(first_history if first else True),
-                    )
-                    if wav is None:  # 被打斷
+                    kwargs = {}
+                    if getattr(self.tts, "supports_csm_context", False):
+                        kwargs = dict(
+                            use_voice_prompt=(first or voice_every_chunk),
+                            use_history_context=(
+                                first_history if first else True),
+                        )
+                    got_audio = False
+                    async for pcm in self.tts.synthesize_stream(
+                            sent, 0, interrupt, **kwargs):
+                        if interrupt.is_set():
+                            break
+                        if not got_audio:
+                            got_audio = True
+                            if first:
+                                if t0 is not None:
+                                    log.info(
+                                        "[lat] FIRST AUDIO=%.0fms (端點→開播)",
+                                        (time.monotonic() - t0) * 1000)
+                                await self._set_state("speaking")
+                                first = False
+                            await self.send_json(
+                                {"type": "assistant_sentence", "text": sent})
+                        await self._send_audio(pcm)
+                    if interrupt.is_set():
                         break
-                    if first:
-                        if t0 is not None:
-                            log.info("[lat] FIRST AUDIO=%.0fms (端點→開播)",
-                                     (time.monotonic() - t0) * 1000)
-                        await self._set_state("speaking")
-                        first = False
-                    await self.send_json(
-                        {"type": "assistant_sentence", "text": sent})
-                    await self._send_audio(wav)
-                    spoken.append(sent)
+                    if got_audio:
+                        spoken.append(sent)
             finally:
                 producer.cancel()
 

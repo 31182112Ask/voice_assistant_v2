@@ -38,7 +38,57 @@
 回聲防護三層：瀏覽器 AEC (第一層) → barge-in 閾值高於普通語音閾值
 (第二層) → 建議耳機 (第三層，徹底消除)。
 
-## 3. 延遲預算 (用戶說完 → 聽到第一個字)
+## 3. TTS 延遲的根因與雙後端設計
+
+### 為什麼 CSM 是結構性瓶頸
+
+CSM 每 80ms 音頻 = 1 次 1B backbone 前向 + 31 次**串行** depth decoder
+前向 ≈ 每秒音頻 ~400 次前向, 4060 上 RTF 最好也只在 1.0 附近。
+更關鍵的是 transformers 的 CSM 實現**無法在生成中途取出音頻**
+(無幀級 streamer, HF 官方未支持), 所以無論塊切多短:
+
+```
+首音延遲下界 = 塊音頻時長 × RTF   ← 「整塊生成完才出聲」, 調參無法突破
+```
+
+### 解法: 幀級流式後端 (tts.backend: kyutai)
+
+Kyutai TTS 1.6B 與 CSM **同源同原理** (transformer → Mimi codec 音頻碼;
+Mimi 正是 Kyutai 為 Moshi 研發、被 CSM 採用的 codec), 但其 Delayed
+Streams 架構原生支持文本邊進、音頻邊出: 每解出一幀 (80ms) 立即下發,
+攢 2 幀 (~160ms) 即開播。RTF ≤1 時播放永不斷流。
+
+| | CSM-1B (transformers) | Kyutai TTS 1.6B |
+|---|---|---|
+| 原理 | Llama backbone + Mimi | DSM transformer + Mimi (同 codec) |
+| 出聲方式 | 整塊生成完 | **逐幀流式 (80ms)** |
+| TTS 首音 | 塊時長 × RTF (~1-2.5s) | **~0.2-0.4s** |
+| 韻律上下文 | ✓ 對話音頻條件生成 (最強) | ✗ (音色靠預置 voice) |
+| 聲音克隆 | ✓ ref.wav 上下文錨定 | 僅預置庫 (嵌入模型未開源) |
+| VRAM (bf16) | ~4.3 GB | ~3.5 GB |
+| 許可 | Apache-2.0 (gated) | CC-BY-4.0 |
+
+`config.yaml → tts.backend` 一鍵切換; kyutai 加載失敗自動回退 CSM。
+
+### 其他可選模型 (同為 LLM→codec 流式路線)
+
+- **Orpheus 400M/150M**: Llama+SNAC, 原生流式, 更小更快, 英文為主
+- **Kokoro-82M**: StyleTTS2 路線, RTF ~0.03 (CPU 可跑), 無克隆/上下文,
+  追求極致穩定低延遲時的兜底選擇
+- **CSM + csm-streaming (社區)**: 保住 CSM 音色的幀級流式, 但依賴重
+  (torchtune/moshi 原版棧), RTF 硬約束仍在
+
+## 3b. 優化後首音預算 (kyutai 後端)
+
+| 階段 | 耗時 |
+|---|---|
+| 端點判定 | 480 ms |
+| ASR (GPU) | ~150 ms |
+| LLM 首塊 (≤5 詞) | ~200–350 ms |
+| Kyutai 首幀×2 | **~200–350 ms** |
+| **合計** | **~1.0–1.3 s** ≈ 自然對話停頓 |
+
+## 3c. 舊延遲預算 (CSM 後端, 參考)
 
 v2 優化後的首音路徑: **首塊不等整句** —— LLM 流一湊出最早的可朗讀斷點
 (句號 / 逗號 / ~5 詞) 就立刻送 CSM。首塊不帶歷史音頻上下文, 只用短

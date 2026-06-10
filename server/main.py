@@ -62,14 +62,38 @@ async def startup() -> None:
         keep_alive=getattr(cfg.llm, "keep_alive", None),
     )
     await llm.warmup()
-    tts = await asyncio.to_thread(
-        CSMSynthesizer,
-        cfg.tts.model_id, cfg.tts.device, cfg.tts.dtype,
-        cfg.tts.compile_decoder, cfg.tts.max_audio_len_ms,
-        cfg.tts.context_turns, cfg.tts.voice_prompt, ROOT,
-        getattr(cfg.tts, "local_files_only", False),
-        getattr(cfg.tts, "max_context_audio_s", 3.0),
-    )
+
+    backend = getattr(cfg.tts, "backend", "csm")
+    if backend == "kyutai":
+        try:
+            from .pipeline.tts_kyutai import KyutaiTTS
+            kcfg = getattr(cfg.tts, "kyutai", None)
+            tts = await asyncio.to_thread(
+                KyutaiTTS,
+                cfg.tts.device,
+                getattr(kcfg, "voice",
+                        "expresso/ex03-ex01_happy_001_channel1_334s.wav"),
+                getattr(kcfg, "temp", 0.6),
+                getattr(kcfg, "cfg_coef", 2.0),
+                getattr(kcfg, "n_q", 16),
+                getattr(kcfg, "first_emit_frames", 2),
+                getattr(kcfg, "batch_frames", 4),
+                getattr(kcfg, "local_files_only",
+                        getattr(cfg.tts, "local_files_only", False)),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("Kyutai 後端加載失敗, 回退到 CSM: %s", e)
+            backend = "csm"
+    if backend == "csm":
+        tts = await asyncio.to_thread(
+            CSMSynthesizer,
+            cfg.tts.model_id, cfg.tts.device, cfg.tts.dtype,
+            cfg.tts.compile_decoder, cfg.tts.max_audio_len_ms,
+            cfg.tts.context_turns, cfg.tts.voice_prompt, ROOT,
+            getattr(cfg.tts, "local_files_only", False),
+            getattr(cfg.tts, "max_context_audio_s", 3.0),
+        )
+    log.info("TTS backend = %s", backend)
     log.info("=== all models ready, open http://localhost:%d ===",
              cfg.server.port)
 

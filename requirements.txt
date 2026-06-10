@@ -25,3 +25,6 @@ torchaudio==2.6.0+cu124
 
 # --- audio ---
 numpy>=1.26
+
+# --- TTS 後端 B: Kyutai TTS (幀級流式, 推薦, config: tts.backend=kyutai) ---
+moshi>=0.2.4
