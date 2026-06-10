@@ -41,6 +41,10 @@ class Session:
             min_speech_ms=cfg.vad.min_speech_ms,
             min_silence_ms=cfg.vad.min_silence_ms,
             pre_roll_ms=cfg.vad.pre_roll_ms,
+            fast_min_silence_ms=getattr(
+                cfg.vad, "fast_min_silence_ms", None),
+            fast_endpoint_after_ms=getattr(
+                cfg.vad, "fast_endpoint_after_ms", 900),
         )
         self.state = "listening"
         self.history: list[dict] = []
@@ -154,21 +158,35 @@ class Session:
                     ack = getattr(pcfg, "instant_ack_text", "Okay.").strip()
                     if ack:
                         got_ack_audio = False
-                        async for pcm in self.tts.synthesize_stream(
-                                ack, 0, interrupt):
-                            if interrupt.is_set():
-                                break
-                            if not got_ack_audio:
-                                got_ack_audio = True
-                                if t0 is not None:
-                                    log.info(
-                                        "[lat] FIRST AUDIO=%.0fms (instant ack)",
-                                        (time.monotonic() - t0) * 1000)
-                                await self._set_state("speaking")
-                                first = False
-                                await self.send_json(
-                                    {"type": "assistant_sentence", "text": ack})
-                            await self._send_audio(pcm)
+                        cached_ack = getattr(pcfg, "instant_ack_pcm", None)
+                        if cached_ack is not None and not interrupt.is_set():
+                            got_ack_audio = True
+                            if t0 is not None:
+                                log.info(
+                                    "[lat] FIRST AUDIO=%.0fms (cached ack)",
+                                    (time.monotonic() - t0) * 1000)
+                            await self._set_state("speaking")
+                            first = False
+                            await self.send_json(
+                                {"type": "assistant_sentence", "text": ack})
+                            await self._send_audio(cached_ack)
+                        else:
+                            async for pcm in self.tts.synthesize_stream(
+                                    ack, 0, interrupt):
+                                if interrupt.is_set():
+                                    break
+                                if not got_ack_audio:
+                                    got_ack_audio = True
+                                    if t0 is not None:
+                                        log.info(
+                                            "[lat] FIRST AUDIO=%.0fms (instant ack)",
+                                            (time.monotonic() - t0) * 1000)
+                                    await self._set_state("speaking")
+                                    first = False
+                                    await self.send_json(
+                                        {"type": "assistant_sentence",
+                                         "text": ack})
+                                await self._send_audio(pcm)
                         if got_ack_audio:
                             spoken.append(ack)
                 while True:

@@ -13,7 +13,9 @@ import json
 import logging
 import os
 import pathlib
+import threading
 
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
@@ -38,6 +40,28 @@ app = FastAPI(title="voice_assistant_v2")
 asr: WhisperASR | None = None
 llm: OllamaLLM | None = None
 tts: CSMSynthesizer | None = None
+
+
+async def _cache_instant_ack(tts_obj) -> None:
+    pcfg = getattr(cfg, "pipeline", None)
+    if not pcfg or not getattr(pcfg, "instant_ack_enabled", False):
+        return
+    if not getattr(pcfg, "instant_ack_cache", False):
+        return
+    ack = getattr(pcfg, "instant_ack_text", "Okay.").strip()
+    if not ack:
+        return
+    try:
+        chunks: list[np.ndarray] = []
+        interrupt = threading.Event()
+        async for pcm in tts_obj.synthesize_stream(ack, 0, interrupt):
+            chunks.append(pcm.astype(np.float32, copy=False))
+        if chunks:
+            pcfg.instant_ack_pcm = np.concatenate(chunks)
+            log.info("Instant ACK cached: %s (%.0fms audio)",
+                     ack, len(pcfg.instant_ack_pcm) / 24)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Instant ACK cache failed, falling back to live TTS: %s", e)
 
 
 @app.on_event("startup")
@@ -94,6 +118,7 @@ async def startup() -> None:
             getattr(cfg.tts, "local_files_only", False),
             getattr(cfg.tts, "max_context_audio_s", 3.0),
         )
+    await _cache_instant_ack(tts)
     log.info("TTS backend = %s", backend)
     log.info("=== all models ready, open http://localhost:%d ===",
              cfg.server.port)

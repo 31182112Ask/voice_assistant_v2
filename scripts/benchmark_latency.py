@@ -126,6 +126,25 @@ async def build_tts(cfg):
     )
 
 
+async def cache_instant_ack(tts, cfg) -> np.ndarray | None:
+    pcfg = getattr(cfg, "pipeline", None)
+    if not pcfg or not getattr(pcfg, "instant_ack_enabled", False):
+        return None
+    if not getattr(pcfg, "instant_ack_cache", False):
+        return None
+    ack = getattr(pcfg, "instant_ack_text", "Okay.").strip()
+    if not ack:
+        return None
+    chunks: list[np.ndarray] = []
+    interrupt = threading.Event()
+    async for pcm in tts.synthesize_stream(ack, 0, interrupt):
+        chunks.append(pcm.astype(np.float32, copy=False))
+    if not chunks:
+        return None
+    pcfg.instant_ack_pcm = np.concatenate(chunks)
+    return pcfg.instant_ack_pcm
+
+
 def load_audio_16k(path: Path) -> np.ndarray:
     audio, sr = sf.read(path, always_2d=False)
     if audio.ndim > 1:
@@ -166,12 +185,18 @@ async def measure_llm_first_chunk(llm: OllamaLLM, cfg, prompt: str) -> dict[str,
     max_w = getattr(pcfg, "first_chunk_max_words", 5) if pcfg else 5
     min_w = getattr(pcfg, "first_chunk_min_words", 1) if pcfg else 1
     started = time.perf_counter()
-    async for chunk in llm.stream_speakable_chunks(
+    stream = llm.stream_speakable_chunks(
         [{"role": "user", "content": prompt}],
         first_chunk_max_words=max_w,
         first_chunk_min_words=min_w,
-    ):
+    )
+    try:
+        chunk = await anext(stream)
         return {"prompt": prompt, "ms": round(_ms(started), 1), "chunk": chunk}
+    except StopAsyncIteration:
+        pass
+    finally:
+        await stream.aclose()
     return {"prompt": prompt, "ms": None, "chunk": ""}
 
 
@@ -214,30 +239,50 @@ async def measure_model_first_audio(llm: OllamaLLM, tts, cfg, prompt: str) -> di
     started = time.perf_counter()
 
     async def first_llm_chunk() -> tuple[str, float | None]:
-        async for chunk in llm.stream_speakable_chunks(
+        stream = llm.stream_speakable_chunks(
             [{"role": "user", "content": prompt}],
             first_chunk_max_words=max_w,
             first_chunk_min_words=min_w,
-        ):
+        )
+        try:
+            chunk = await anext(stream)
             return chunk, _ms(started)
+        except StopAsyncIteration:
+            return "", None
+        finally:
+            await stream.aclose()
         return "", None
 
     llm_task = asyncio.create_task(first_llm_chunk())
     if getattr(pcfg, "instant_ack_enabled", False):
         ack = getattr(pcfg, "instant_ack_text", "Okay.").strip()
         if ack:
-            interrupt = threading.Event()
-            async for _pcm in tts.synthesize_stream(ack, 0, interrupt):
+            cached_ack = getattr(pcfg, "instant_ack_pcm", None)
+            if cached_ack is not None:
                 first_audio_ms = _ms(started)
                 first_chunk, llm_ms = await llm_task
                 return {
                     "prompt": prompt,
-                    "strategy": "instant_ack",
+                    "strategy": "cached_ack",
                     "chunk": ack,
                     "llm_chunk": first_chunk,
                     "llm_first_chunk_ms": round(llm_ms, 1) if llm_ms is not None else None,
                     "model_first_audio_ms": round(first_audio_ms, 1),
+                    "cached_ack_audio_ms": round(len(cached_ack) / 24, 1),
                 }
+            else:
+                interrupt = threading.Event()
+                async for _pcm in tts.synthesize_stream(ack, 0, interrupt):
+                    first_audio_ms = _ms(started)
+                    first_chunk, llm_ms = await llm_task
+                    return {
+                        "prompt": prompt,
+                        "strategy": "instant_ack",
+                        "chunk": ack,
+                        "llm_chunk": first_chunk,
+                        "llm_first_chunk_ms": round(llm_ms, 1) if llm_ms is not None else None,
+                        "model_first_audio_ms": round(first_audio_ms, 1),
+                    }
 
     first_chunk = ""
     llm_ms: float | None = None
@@ -307,6 +352,7 @@ async def main() -> None:
 
     llm = await build_llm(cfg)
     tts = await build_tts(cfg)
+    await cache_instant_ack(tts, cfg)
 
     llm_runs = [await measure_llm_first_chunk(llm, cfg, prompt) for prompt in PROMPTS]
     tts_runs = [await measure_tts(tts, text) for text in TTS_TEXTS]
@@ -314,9 +360,17 @@ async def main() -> None:
 
     results: dict[str, Any] = {
         "config": {
-            "endpoint_ms": getattr(cfg.vad, "min_silence_ms", None),
+            "endpoint_ms": getattr(
+                cfg.vad, "fast_min_silence_ms",
+                getattr(cfg.vad, "min_silence_ms", None),
+            ),
+            "fallback_endpoint_ms": getattr(cfg.vad, "min_silence_ms", None),
             "tts_backend": getattr(cfg.tts, "backend", "csm"),
             "llm_model": cfg.llm.model,
+            "instant_ack_cache": bool(
+                getattr(getattr(cfg, "pipeline", None),
+                        "instant_ack_pcm", None) is not None
+            ),
             "first_chunk_max_words": getattr(getattr(cfg, "pipeline", None), "first_chunk_max_words", None),
             "first_chunk_min_words": getattr(getattr(cfg, "pipeline", None), "first_chunk_min_words", None),
         },
@@ -346,6 +400,7 @@ async def main() -> None:
 
     args.json.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(results, ensure_ascii=False, indent=2))
+    await llm.client.aclose()
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ vad:
   threshold: 0.55               # 語音概率閾值
   min_speech_ms: 250            # 連續語音超過此時長 → 確認用戶在說話
   min_silence_ms: 320           # 端點判定: 320ms 是 Silero 穩定性與自然停頓的折中
+  fast_min_silence_ms: 192      # 正常長句已穩定後, 用短靜音快速結束
+  fast_endpoint_after_ms: 900   # 短於此值仍使用保守 min_silence_ms, 避免截斷短停頓
   barge_in_speech_ms: 256       # AI 說話時更快接受打斷
                                 # (比 min_speech_ms 略高, 抗回聲誤觸發)
   pre_roll_ms: 240              # 語音起點前保留的緩衝, 避免吃掉首字
@@ -89,6 +91,7 @@ tts:
 pipeline:
   instant_ack_enabled: true
   instant_ack_text: "Okay."
+  instant_ack_cache: true       # 啟動時離線預合成 ACK, 回合中直接下發 PCM
   first_chunk_max_words: 5      # 首塊最多單詞數: LLM 流一湊夠這麼多詞(或先遇到
                                 # 逗號/句號)立刻送 CSM 合成 → 首音延遲由
                                 # 「整句生成時間」降為「~1 秒音頻的生成時間」

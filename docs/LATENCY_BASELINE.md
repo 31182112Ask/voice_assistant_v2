@@ -60,15 +60,20 @@ Command:
 
 Last passing run:
 
-- Endpoint config: 320 ms
-- ASR median: 206.2 ms on `voices/ref.wav`
-- LLM first speakable chunk median: 1261.5 ms
-- Perceived model first audio median: 640.0 ms via instant ack
-- Estimated user-stop-to-first-audio: 1166.2 ms
-- TTS first chunk median: 667.5 ms
+- Fast endpoint config: 192 ms for stable utterances
+- Fallback endpoint config: 320 ms
+- ASR median: 190.8 ms on `voices/ref.wav`
+- LLM first speakable chunk median: 1222.8 ms
+- Perceived model first audio median: 0.0 ms via cached ACK
+- Cached ACK audio: 800.0 ms, generated offline at startup
+- Estimated user-stop-to-first-audio: 382.8 ms
+- TTS first chunk median: 635.7 ms
 - TTS RTF median: 0.6
-- Max inter-chunk gap max: 211.0 ms
+- Max inter-chunk gap max: 207.8 ms
 
-The main remaining gap to strict natural timing is not audio streaming anymore;
-it is endpoint prediction plus the 2B Ollama model's roughly 1.2 s first
-speakable chunk latency.
+The first audible response is now inside the strict human-like timing envelope,
+because the assistant can emit a locally cached backchannel immediately after
+ASR. The main remaining gap is semantic: the first real LLM content still takes
+about 1.2 s. Closing that without reducing model size requires partial ASR plus
+speculative/prestarted LLM generation, or a lower-latency local inference
+backend for the same model class.

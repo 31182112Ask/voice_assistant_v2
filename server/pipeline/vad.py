@@ -37,13 +37,21 @@ class StreamingVAD:
     SAMPLE_RATE = 16000
 
     def __init__(self, threshold: float, min_speech_ms: int,
-                 min_silence_ms: int, pre_roll_ms: int):
+                 min_silence_ms: int, pre_roll_ms: int,
+                 fast_min_silence_ms: int | None = None,
+                 fast_endpoint_after_ms: int = 900):
         from silero_vad import load_silero_vad
         self.model = load_silero_vad()  # CPU, 極輕量
         self.threshold = threshold
         self.frame_ms = int(1000 * self.FRAME_SAMPLES / self.SAMPLE_RATE)  # 32ms
         self.min_speech_frames = max(1, min_speech_ms // self.frame_ms)
         self.min_silence_frames = max(1, min_silence_ms // self.frame_ms)
+        self.fast_min_silence_frames = (
+            max(1, fast_min_silence_ms // self.frame_ms)
+            if fast_min_silence_ms else None
+        )
+        self.fast_endpoint_after_frames = max(
+            1, fast_endpoint_after_ms // self.frame_ms)
         pre_roll_frames = max(1, pre_roll_ms // self.frame_ms)
 
         self._pre_roll = collections.deque(maxlen=pre_roll_frames)
@@ -54,6 +62,7 @@ class StreamingVAD:
         self._in_speech = False
         self._voiced_run = 0
         self._silence_run = 0
+        self._segment_frames = 0
         self._segment: list[np.ndarray] = []
         self._pre_roll.clear()
         self._residual = np.zeros(0, dtype=np.float32)
@@ -90,14 +99,22 @@ class StreamingVAD:
                 # 確認語音開始: 把 pre-roll 一併納入語音段
                 self._in_speech = True
                 self._segment = list(self._pre_roll)
+                self._segment_frames = len(self._segment)
                 res.event = VadEvent.SPEECH_START
         else:
             self._segment.append(frame)
-            if self._silence_run >= self.min_silence_frames:
+            self._segment_frames += 1
+            fast_endpoint = (
+                self.fast_min_silence_frames is not None
+                and self._segment_frames >= self.fast_endpoint_after_frames
+                and self._silence_run >= self.fast_min_silence_frames
+            )
+            if fast_endpoint or self._silence_run >= self.min_silence_frames:
                 # 一句話結束
                 segment = np.concatenate(self._segment)
                 self._in_speech = False
                 self._voiced_run = 0
+                self._segment_frames = 0
                 self._segment = []
                 self._pre_roll.clear()
                 res.event = VadEvent.SPEECH_END
