@@ -55,6 +55,7 @@ async def startup() -> None:
         max_tokens=cfg.llm.max_tokens, temperature=cfg.llm.temperature,
         think=getattr(cfg.llm, "think", None),
         num_gpu=getattr(cfg.llm, "num_gpu", None),
+        keep_alive=getattr(cfg.llm, "keep_alive", None),
     )
     await llm.warmup()
     tts = await asyncio.to_thread(
@@ -63,6 +64,7 @@ async def startup() -> None:
         cfg.tts.compile_decoder, cfg.tts.max_audio_len_ms,
         cfg.tts.context_turns, cfg.tts.voice_prompt, ROOT,
         getattr(cfg.tts, "local_files_only", False),
+        getattr(cfg.tts, "max_context_audio_s", 3.0),
     )
     log.info("=== all models ready, open http://localhost:%d ===",
              cfg.server.port)

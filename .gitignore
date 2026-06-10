@@ -4,6 +4,8 @@ __pycache__/
 venv/
 screenshots/
 {server/
+latency_optimization.patch
+voice_assistant_v2_lowlatency.zip
 voices/*.wav
 voices/*.txt
 *.log

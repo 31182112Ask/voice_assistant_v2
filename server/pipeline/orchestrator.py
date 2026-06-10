@@ -91,13 +91,17 @@ class Session:
 
     # ================= 一句用戶話 → 一輪回應 =================
     async def _handle_utterance(self, segment: np.ndarray) -> None:
+        import time
+        t0 = time.monotonic()          # 語音端點時刻 = 延遲計時起點
         dur = len(segment) / 16000
         if dur < 0.3:
             return
         text = await self.asr.transcribe(segment)
+        t_asr = time.monotonic()
         if not text or len(text.strip()) < 2:
             return
         log.info("USER (%.1fs): %s", dur, text)
+        log.info("[lat] asr=%.0fms", (t_asr - t0) * 1000)
         await self.send_json({"type": "user_transcript", "text": text})
 
         # 同一時間只允許一輪回應; 新話語覆蓋舊回應 (自然的搶話語義)
@@ -108,19 +112,24 @@ class Session:
         self.tts.add_user_context(text, segment)
 
         self._tts_interrupt = threading.Event()
-        self._respond_task = asyncio.create_task(self._respond())
+        self._respond_task = asyncio.create_task(self._respond(t0))
 
-    async def _respond(self) -> None:
+    async def _respond(self, t0: float | None = None) -> None:
+        import time
         spoken: list[str] = []
         interrupt = self._tts_interrupt
         try:
             await self._set_state("thinking")
             queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=4)
+            pcfg = getattr(self.cfg, "pipeline", None)
+            max_w = getattr(pcfg, "first_chunk_max_words", 9) if pcfg else 9
+            min_w = getattr(pcfg, "first_chunk_min_words", 2) if pcfg else 2
 
             async def produce() -> None:
                 try:
-                    async for sent in self.llm.stream_sentences(self.history):
-                        await queue.put(sent)
+                    async for chunk in self.llm.stream_speakable_chunks(
+                            self.history, max_w, min_w):
+                        await queue.put(chunk)
                 finally:
                     await queue.put(None)
 
@@ -131,10 +140,16 @@ class Session:
                     sent = await queue.get()
                     if sent is None:
                         break
+                    if first and t0 is not None:
+                        log.info("[lat] llm_first_chunk=%.0fms (%r)",
+                                 (time.monotonic() - t0) * 1000, sent)
                     wav = await self.tts.synthesize(sent, 0, interrupt)
                     if wav is None:  # 被打斷
                         break
                     if first:
+                        if t0 is not None:
+                            log.info("[lat] FIRST AUDIO=%.0fms (端點→開播)",
+                                     (time.monotonic() - t0) * 1000)
                         await self._set_state("speaking")
                         first = False
                     await self.send_json(

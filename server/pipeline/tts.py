@@ -43,7 +43,9 @@ class CSMSynthesizer:
     def __init__(self, model_id: str, device: str, dtype: str,
                  compile_decoder: bool, max_audio_len_ms: int,
                  context_turns: int, voice_prompt_cfg, root: pathlib.Path,
-                 local_files_only: bool = False):
+                 local_files_only: bool = False,
+                 max_context_audio_s: float = 3.0):
+        self.max_context_audio_s = max_context_audio_s
         if local_files_only:
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -99,8 +101,12 @@ class CSMSynthesizer:
                 audio = resample_linear(audio, sr, SAMPLE_RATE)
             text = txt_path.read_text(encoding="utf-8").strip()
             self._voice_prompt = (int(cfg.speaker_id), text, audio)
-            log.info("Voice prompt loaded: %s (%.1fs)", wav_path.name,
-                     len(audio) / SAMPLE_RATE)
+            vp_s = len(audio) / SAMPLE_RATE
+            log.info("Voice prompt loaded: %s (%.1fs)", wav_path.name, vp_s)
+            if vp_s > 6.0:
+                log.warning(
+                    "voice prompt 長達 %.1fs — 它是每一句合成的固定前綴, "
+                    "會拖慢所有 TTS 塊; 強烈建議裁剪到 ≤5 秒", vp_s)
         except Exception as e:  # noqa: BLE001
             log.warning("Voice prompt load failed, using base voice: %s", e)
 
@@ -137,6 +143,7 @@ class CSMSynthesizer:
         with self._lock:
             if interrupt.is_set():
                 return None
+            t_start = __import__("time").monotonic()
             conv = self._build_conversation(text, speaker_id, use_context)
             inputs = self.processor.apply_chat_template(
                 conv, tokenize=True, return_dict=True,
@@ -159,7 +166,16 @@ class CSMSynthesizer:
             if interrupt.is_set():
                 return None
             wav = audio[0].to(torch.float32).cpu().numpy().reshape(-1)
+            gen_s = __import__("time").monotonic() - t_start
+            audio_s = len(wav) / SAMPLE_RATE
+            log.info("[lat] tts gen=%.2fs audio=%.2fs rtf=%.2f (%d chars)",
+                     gen_s, audio_s, gen_s / max(audio_s, 1e-6), len(text))
             return wav
+
+    def _cap(self, audio: np.ndarray) -> np.ndarray:
+        """上下文音頻只保留尾部 N 秒 (韻律銜接看的是最近的節奏)。"""
+        cap = int(self.max_context_audio_s * SAMPLE_RATE)
+        return audio[-cap:] if len(audio) > cap else audio
 
     # ------------------------------------------------------------------
     async def synthesize(self, text: str, speaker_id: int,
@@ -168,14 +184,14 @@ class CSMSynthesizer:
         wav = await asyncio.to_thread(
             self._generate_sync, text, speaker_id, interrupt)
         if wav is not None:
-            self._context.append((speaker_id, text, wav))
+            self._context.append((speaker_id, text, self._cap(wav)))
         return wav
 
     def add_user_context(self, text: str, audio_16k: np.ndarray) -> None:
         """把用戶語音也放入韻律上下文 (speaker 1), 讓 AI 回應的語氣呼應用戶。"""
         from ..utils.audio import resample_linear
         audio_24k = resample_linear(audio_16k, 16000, SAMPLE_RATE)
-        self._context.append((1, text, audio_24k))
+        self._context.append((1, text, self._cap(audio_24k)))
 
     def reset_context(self) -> None:
         self._context.clear()

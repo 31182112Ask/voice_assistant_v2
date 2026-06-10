@@ -23,7 +23,8 @@ class OllamaLLM:
     def __init__(self, base_url: str, model: str, system_prompt: str,
                  max_tokens: int, temperature: float,
                  think: bool | None = None,
-                 num_gpu: int | None = None):
+                 num_gpu: int | None = None,
+                 keep_alive: int | str | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.system_prompt = system_prompt
@@ -31,6 +32,7 @@ class OllamaLLM:
         self.temperature = temperature
         self.think = think
         self.num_gpu = num_gpu
+        self.keep_alive = keep_alive
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5))
 
     async def warmup(self) -> None:
@@ -55,6 +57,8 @@ class OllamaLLM:
             payload["options"]["num_gpu"] = self.num_gpu
         if self.think is not None:
             payload["think"] = self.think
+        if self.keep_alive is not None:
+            payload["keep_alive"] = self.keep_alive
         async with self.client.stream(
             "POST", f"{self.base_url}/api/chat", json=payload
         ) as resp:
@@ -90,6 +94,68 @@ class OllamaLLM:
         if tail:
             yield tail
 
+    async def stream_speakable_chunks(
+        self, messages: list[dict],
+        first_chunk_max_words: int = 9,
+        first_chunk_min_words: int = 3,
+    ) -> AsyncIterator[str]:
+        """壓低首音延遲的核心: 首塊不等整句。
+
+        階段 1 (首塊): token 一邊到一邊掃描, 只要滿足任一條件立刻產出:
+            a) 遇到句末標點         b) 遇到子句邊界 (,;:—) 且 ≥ min_words
+            c) 詞數達到 max_words (在最後一個空格處截斷)
+          → CSM 只需生成 ~1 秒音頻即可開播, 而不是等 3-5 秒的整句。
+        階段 2 (其後): 退回逐句模式, 在首塊播放期間並行合成, 聽感無縫。
+        """
+        buf = ""
+        first_done = False
+        async for token in self.stream_tokens(messages):
+            buf += token
+            if not first_done:
+                chunk, rest = self._cut_first_chunk(
+                    buf, first_chunk_max_words, first_chunk_min_words)
+                if chunk is not None:
+                    first_done = True
+                    buf = rest
+                    yield chunk
+                continue
+            while True:
+                m = _SENT_RE.match(buf)
+                if not m:
+                    break
+                candidate = m.group(1).strip()
+                rest = buf[m.end():]
+                if len(candidate) < _MIN_SENT_CHARS and rest:
+                    break
+                buf = rest
+                if candidate:
+                    yield candidate
+        tail = buf.strip()
+        if tail:
+            yield tail
+
+    @staticmethod
+    def _cut_first_chunk(buf: str, max_words: int,
+                         min_words: int) -> tuple[str | None, str]:
+        """在 token 流前綴上找最早的可朗讀斷點。返回 (首塊|None, 剩餘)。"""
+        words = buf.split()
+        # a) 句末標點
+        m = _SENT_RE.match(buf)
+        if m and len(m.group(1).split()) >= 1:
+            return m.group(1).strip(), buf[m.end():]
+        # b) 子句邊界
+        cm = re.search(r"[,;:—–]\s", buf)
+        if cm:
+            head = buf[: cm.end()].strip()
+            if len(head.split()) >= min_words:
+                return head, buf[cm.end():]
+        # c) 詞數達標 (保留最後一個可能不完整的詞在剩餘部分)
+        if len(words) > max_words:
+            head = " ".join(words[:max_words])
+            idx = buf.find(head) + len(head)
+            return head.strip(), buf[idx:]
+        return None, buf
+
     async def _collect(self, messages: list[dict], max_tokens: int) -> str:
         payload = {
             "model": self.model,
@@ -101,6 +167,8 @@ class OllamaLLM:
             payload["options"]["num_gpu"] = self.num_gpu
         if self.think is not None:
             payload["think"] = self.think
+        if self.keep_alive is not None:
+            payload["keep_alive"] = self.keep_alive
         r = await self.client.post(f"{self.base_url}/api/chat", json=payload)
         r.raise_for_status()
         return r.json().get("message", {}).get("content", "")

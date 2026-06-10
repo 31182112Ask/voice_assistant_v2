@@ -23,7 +23,7 @@ audio:
 vad:
   threshold: 0.55               # 語音概率閾值
   min_speech_ms: 250            # 連續語音超過此時長 → 確認用戶在說話
-  min_silence_ms: 650           # 靜音超過此時長 → 判定一句話結束 (endpointing)
+  min_silence_ms: 480           # 靜音超過此時長 → 判定一句話結束 (endpointing)
   barge_in_speech_ms: 320       # AI 說話期間, 用戶連續語音超過此值 → 觸發打斷
                                 # (比 min_speech_ms 略高, 抗回聲誤觸發)
   pre_roll_ms: 240              # 語音起點前保留的緩衝, 避免吃掉首字
@@ -33,8 +33,8 @@ asr:
   device: "cpu"                 # cpu 省 VRAM; 改 "cuda" 更快但佔 ~0.9GB
   compute_type: "int8"          # cpu→int8 / cuda→float16
   language: null                # null = 自動偵測; 可設 "en" / "zh"
-  beam_size: 2
-  warmup: false                 # 後台部署時避免 faster-whisper 預熱轉錄崩潰
+  beam_size: 1                  # 貪心解碼, 對話場景準確率幾乎無損, 提速 ~30-40%
+  warmup: true                  # 預熱已加 try/except 保護, 不會再導致啟動崩潰
 
 llm:
   backend: "ollama"
@@ -42,16 +42,18 @@ llm:
   model: "qwen3.5:2b"           # 本機已安裝; 低佔用，適合 8GB VRAM 與 CSM 並行
   think: false                  # 關閉推理模型的 thinking 欄位，確保語音回答進 content
   num_gpu: 0                    # LLM 放 CPU，GPU 優先留給 CSM-1B
+  keep_alive: -1                # 常駐內存, 杜絕 Ollama 5 分鐘後卸載→下一輪重載數秒的隨機高延遲
   # 若想完全不佔 GPU: 在啟動 Ollama 前設 OLLAMA_NUM_GPU=0 (純 CPU, 64GB RAM 無壓力)
-  max_tokens: 220               # 語音對話保持簡短
+  max_tokens: 150               # 語音對話保持簡短 (越短整輪越快)
   temperature: 0.8
   system_prompt: |
     You are a warm, witty voice assistant in a real-time spoken conversation.
     Keep replies short and conversational: 1-3 sentences unless asked for detail.
-    Never use markdown, lists, emoji, or stage directions. Speak naturally,
-    like a person on the phone. Reply in English (the speech model is
-    English-only), even if the user speaks another language — but you may
-    briefly acknowledge their language.
+    IMPORTANT: open with a very short first sentence (under 8 words), like a
+    natural spoken acknowledgment, then continue. Never use markdown, lists,
+    emoji, or stage directions. Speak naturally, like a person on the phone.
+    Reply in English (the speech model is English-only), even if the user
+    speaks another language — but you may briefly acknowledge their language.
 
 tts:
   model_id: "sesame/csm-1b"     # Sesame 官方開源權重 (需在 HF 接受授權)
@@ -59,13 +61,22 @@ tts:
   device: "cuda"
   dtype: "bfloat16"             # RTX 4060 (Ada) 原生支持 bf16
   compile_decoder: true         # torch.compile 解碼器, 實測可達實時的關鍵優化
-  max_audio_len_ms: 18000       # 單句最長音頻
-  context_turns: 2              # 帶入多少輪歷史音頻做韻律上下文 (越多越自然但越慢)
+  max_audio_len_ms: 15000       # 單句最長音頻
+  context_turns: 1              # 韻律上下文輪數 (1 = 延遲優先; 2 = 自然度優先)
+  max_context_audio_s: 3.0      # 單條上下文音頻最長保留秒數 (截尾), 控制 prefill
   voice_prompt:                 # 參考音色 (CSM 基座無固定音色, 用參考音頻錨定)
     enabled: true               # 將 wav + 文本放入 voices/ 後設為 true
     wav: "voices/ref.wav"
     text: "voices/ref.txt"
     speaker_id: 0
+                                # ⚠ ref.wav 建議 ≤5 秒: 它會作為每一句合成的前綴,
+                                #   過長會直接拖慢每個 TTS 塊
+
+pipeline:
+  first_chunk_max_words: 9      # 首塊最多單詞數: LLM 流一湊夠這麼多詞(或先遇到
+                                # 逗號/句號)立刻送 CSM 合成 → 首音延遲由
+                                # 「整句生成時間」降為「~1 秒音頻的生成時間」
+  first_chunk_min_words: 2      # 首塊至少詞數 (2 = 允許 "Good question," 這類自然開場白)
 
 conversation:
   max_history_turns: 12         # 文本歷史輪數上限

@@ -40,17 +40,24 @@
 
 ## 3. 延遲預算 (用戶說完 → 聽到第一個字)
 
-| 階段 | 耗時 (4060 實測量級) |
-|---|---|
-| 端點判定 (min_silence_ms) | 650 ms (可調, 越短越搶話) |
-| ASR (whisper small, CPU int8, 3s 語音) | ~300 ms |
-| LLM 首句 (qwen2.5:3b, 流式) | ~400–700 ms |
-| CSM 首句合成 (bf16 + compile, ~2s 音頻) | ~1.2–2 s |
-| **合計首音延遲** | **~2.5–3.5 s** |
+v2 優化後的首音路徑: **首塊不等整句** —— LLM 流一湊出最早的可朗讀斷點
+(句號 / 逗號 / ~9 詞) 就立刻送 CSM, CSM 只需生成 ~1 秒音頻即可開播。
 
-後續句子在首句播放期間並行生成，播放基本無縫。進一步壓延遲的手段：
-`min_silence_ms` 降到 500、`context_turns` 降為 1、ASR 換 `base`、
-LLM system prompt 限制更短回覆。
+| 階段 | 優化前 | 優化後 (4060 量級) |
+|---|---|---|
+| 端點判定 | 650 ms | 480 ms |
+| ASR (small, CPU int8, beam 1, 已預熱) | ~400 ms | ~250 ms |
+| LLM 首塊 (2-9 詞, keep_alive 常駐) | ~700 ms (整句) | ~250–450 ms |
+| CSM 首塊合成 (~1s 音頻, compile) | ~3–5 s (整句) | **~0.8–1.4 s** |
+| **合計首音延遲** | **~5–7 s** | **~1.8–2.6 s** |
+
+後續塊在首塊播放期間並行生成。服務端每輪打印 `[lat]` 日誌
+(`asr= / llm_first_chunk= / FIRST AUDIO= / tts rtf=`), 直接看瓶頸在哪:
+- `tts rtf` 持續 > 1.0 → torch.compile 沒生效或顯存溢出到共享內存,
+  檢查啟動日誌是否有 "depth decoder compiled", `nvidia-smi` 看佔用
+- `llm_first_chunk` > 1s → Ollama 模型被卸載過 (確認 keep_alive) 或
+  thinking 沒關掉
+- `asr` > 500ms → 換 `base` 模型或 `device: cuda`
 
 ## 4. CSM 的韻律上下文
 

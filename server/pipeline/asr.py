@@ -18,8 +18,12 @@ class WhisperASR:
         self.language = language
         self.beam_size = beam_size
         if warmup:
-            # 預熱, 避免首次請求的編譯/分配延遲
-            self.model.transcribe(np.zeros(16000, dtype=np.float32), beam_size=1)
+            try:
+                # 預熱, 避免首次請求的編譯/分配延遲 (失敗不影響啟動)
+                self.model.transcribe(np.zeros(16000, dtype=np.float32),
+                                      beam_size=1)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ASR warmup failed (non-fatal): %s", e)
         log.info("ASR ready.")
 
     def _transcribe_sync(self, audio: np.ndarray) -> str:
