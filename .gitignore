@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+screenshots/
+{server/
+voices/*.wav
+voices/*.txt
+*.log
+.DS_Store

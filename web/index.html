@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>voice_assistant_v2 — 全雙工語音助手</title>
+<style>
+  :root{
+    --ink:#15171f;        /* 深夜電台的機箱色 */
+    --panel:#1c1f2a;
+    --line:#2c3040;
+    --signal:#f2a93b;     /* VU 表琥珀 */
+    --signal-dim:#8a6322;
+    --paper:#ece7da;
+    --muted:#8b8fa0;
+    --user:#9ec1ff;
+    --danger:#e06c5a;
+    --mono:"SF Mono","Cascadia Code","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--ink);color:var(--paper);font-family:var(--mono);
+    display:flex;flex-direction:column;align-items:center;
+    padding:28px 16px;gap:22px;
+  }
+  header{display:flex;align-items:baseline;gap:14px;width:min(720px,100%)}
+  header h1{font-size:15px;letter-spacing:.18em;font-weight:600;text-transform:uppercase}
+  header .dot{width:8px;height:8px;border-radius:50%;background:var(--danger);align-self:center;transition:background .3s}
+  header .dot.on{background:#5fd08a}
+  header .sub{color:var(--muted);font-size:11px;margin-left:auto}
+
+  /* ---------- 信號環: 狀態的唯一視覺主角 ---------- */
+  .ring-wrap{position:relative;width:180px;height:180px;flex:none}
+  .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--line);transition:border-color .25s}
+  .ring-core{
+    position:absolute;inset:30px;border-radius:50%;
+    background:radial-gradient(circle at 38% 32%, #2a2e3d, var(--panel));
+    display:flex;align-items:center;justify-content:center;
+    font-size:11px;letter-spacing:.22em;color:var(--muted);text-transform:uppercase;
+    transition:box-shadow .3s,color .3s;
+  }
+  .ring-wrap.listening .ring{border-color:var(--signal-dim)}
+  .ring-wrap.listening .ring-core{color:var(--signal)}
+  .ring-wrap.listening.voiced .ring{border-color:var(--signal);box-shadow:0 0 26px rgba(242,169,59,.25)}
+  .ring-wrap.thinking .ring{border-color:transparent}
+  .ring-wrap.thinking::after{
+    content:"";position:absolute;inset:0;border-radius:50%;
+    border:2px solid transparent;border-top-color:var(--signal);
+    animation:spin 1s linear infinite;
+  }
+  .ring-wrap.speaking .ring{border-color:var(--signal)}
+  .ring-wrap.speaking .ring-core{box-shadow:0 0 34px rgba(242,169,59,.35) inset;color:var(--paper)}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion: reduce){.ring-wrap.thinking::after{animation:none;border-color:var(--signal)}}
+
+  .hint{color:var(--muted);font-size:11px;text-align:center;max-width:420px;line-height:1.7}
+  .hint b{color:var(--signal);font-weight:600}
+
+  /* ---------- 對話記錄 ---------- */
+  .log{
+    width:min(720px,100%);flex:1;min-height:160px;overflow-y:auto;
+    background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    padding:16px;display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.65;
+  }
+  .turn{max-width:88%}
+  .turn .who{font-size:10px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;margin-bottom:2px}
+  .turn.user{align-self:flex-end;text-align:right;color:var(--user)}
+  .turn.ai{align-self:flex-start}
+  .turn.ai.partial::after{content:"▌";color:var(--signal);animation:blink 1s steps(1) infinite}
+  .turn.interrupted .who::after{content:" · 被打斷";color:var(--danger);letter-spacing:0}
+  @keyframes blink{50%{opacity:0}}
+
+  .controls{display:flex;gap:10px;width:min(720px,100%);justify-content:center}
+  button{
+    font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;
+    background:transparent;color:var(--paper);border:1px solid var(--line);
+    border-radius:4px;padding:10px 22px;cursor:pointer;transition:border-color .2s,color .2s;
+  }
+  button:hover,button:focus-visible{border-color:var(--signal);color:var(--signal);outline:none}
+  button.primary{border-color:var(--signal);color:var(--signal)}
+  button:disabled{opacity:.4;cursor:default}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="connDot"></span>
+  <h1>voice assistant v2</h1>
+  <span class="sub">Sesame CSM-1B · full-duplex</span>
+</header>
+
+<div class="ring-wrap" id="ring">
+  <div class="ring"></div>
+  <div class="ring-core" id="stateLabel">offline</div>
+</div>
+
+<p class="hint">點擊 <b>開始對話</b> 後直接說話即可。AI 說話時你可以<b>隨時開口打斷</b>，
+播放會立即停止並聆聽你的新問題。建議佩戴耳機以獲得最佳打斷體驗。</p>
+
+<div class="log" id="log"></div>
+
+<div class="controls">
+  <button class="primary" id="btnStart">開始對話</button>
+  <button id="btnReset" disabled>清空記憶</button>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const ring = $("ring"), stateLabel = $("stateLabel"), logEl = $("log");
+
+let ws = null, audioCtx = null, workletNode = null, micStream = null;
+let outputSR = 24000;
+
+/* ============ 播放隊列 (可打斷) ============ */
+const player = {
+  playhead: 0, sources: new Set(), pendingDone: null,
+  enqueue(pcmBytes) {
+    const i16 = new Int16Array(pcmBytes);
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    const buf = audioCtx.createBuffer(1, f32.length, outputSR);
+    buf.copyToChannel(f32, 0);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf; src.connect(audioCtx.destination);
+    const t = Math.max(audioCtx.currentTime + 0.04, this.playhead);
+    src.start(t);
+    this.playhead = t + buf.duration;
+    this.sources.add(src);
+    src.onended = () => {
+      this.sources.delete(src);
+      if (this.sources.size === 0) {
+        send({type: "playback_done"});
+        finishPartial(false);
+      }
+    };
+  },
+  flush() {  // barge-in: 立即靜音
+    for (const s of this.sources) { s.onended = null; try{s.stop()}catch(_){} }
+    this.sources.clear();
+    this.playhead = 0;
+  }
+};
+
+/* ============ 麥克風採集: AudioWorklet → 16kHz PCM16 ============ */
+const WORKLET = `
+class Capture extends AudioWorkletProcessor {
+  constructor(){ super(); this.ratio = sampleRate / 16000; this.acc = 0; this.buf = []; }
+  process(inputs){
+    const ch = inputs[0][0];
+    if (!ch) return true;
+    // 簡單抽取式降採樣 (瀏覽器已做 AEC/NS, 語音場景足夠)
+    for (let i = 0; i < ch.length; i++) {
+      this.acc += 1;
+      if (this.acc >= this.ratio) {
+        this.acc -= this.ratio;
+        let v = Math.max(-1, Math.min(1, ch[i]));
+        this.buf.push(v * 32767 | 0);
+        if (this.buf.length >= 1024) {  // 64ms 一包
+          this.port.postMessage(Int16Array.from(this.buf).buffer, []);
+          this.buf.length = 0;
+        }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("capture", Capture);`;
+
+async function startAudio() {
+  audioCtx = new AudioContext();
+  micStream = await navigator.mediaDevices.getUserMedia({audio: {
+    echoCancellation: true,   // 打斷不誤觸發的第一道防線
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: 1,
+  }});
+  const url = URL.createObjectURL(new Blob([WORKLET], {type: "application/javascript"}));
+  await audioCtx.audioWorklet.addModule(url);
+  workletNode = new AudioWorkletNode(audioCtx, "capture");
+  workletNode.port.onmessage = e => {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+  };
+  audioCtx.createMediaStreamSource(micStream).connect(workletNode);
+}
+
+/* ============ WebSocket ============ */
+function send(obj){ if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+
+function connect() {
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { $("connDot").classList.add("on"); $("btnReset").disabled = false; };
+  ws.onclose = () => { $("connDot").classList.remove("on"); setState("offline"); };
+  ws.onmessage = ev => {
+    if (ev.data instanceof ArrayBuffer) { player.enqueue(ev.data); return; }
+    const m = JSON.parse(ev.data);
+    switch (m.type) {
+      case "ready":            outputSR = m.output_sr; break;
+      case "state":            setState(m.state); break;
+      case "vad":              ring.classList.toggle("voiced", m.speaking); break;
+      case "user_transcript":  addTurn("user", "你", m.text); break;
+      case "assistant_sentence": appendAssistant(m.text); break;
+      case "assistant_done":   /* 等播放結束時 finishPartial */ break;
+      case "interrupt":        player.flush(); finishPartial(true); break;
+      case "history_cleared":  logEl.innerHTML = ""; break;
+      case "error":            addTurn("ai", "系統", "⚠ " + m.message); break;
+    }
+  };
+}
+
+/* ============ UI ============ */
+function setState(s) {
+  ring.className = "ring-wrap " + s;
+  stateLabel.textContent = {listening:"聆聽中", thinking:"思考中", speaking:"說話中", offline:"offline"}[s] || s;
+}
+function addTurn(cls, who, text) {
+  const d = document.createElement("div");
+  d.className = "turn " + cls;
+  d.innerHTML = `<div class="who"></div><div class="txt"></div>`;
+  d.querySelector(".who").textContent = who;
+  d.querySelector(".txt").textContent = text;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+  return d;
+}
+let partialAI = null;
+function appendAssistant(sentence) {
+  if (!partialAI) partialAI = addTurn("ai partial", "助手", "");
+  const t = partialAI.querySelector(".txt");
+  t.textContent = (t.textContent + " " + sentence).trim();
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function finishPartial(interrupted) {
+  if (!partialAI) return;
+  partialAI.classList.remove("partial");
+  if (interrupted) partialAI.classList.add("interrupted");
+  partialAI = null;
+}
+
+/* ============ 入口 ============ */
+$("btnStart").onclick = async () => {
+  $("btnStart").disabled = true;
+  $("btnStart").textContent = "運行中";
+  try {
+    await startAudio();
+    connect();
+    setState("listening");
+  } catch (e) {
+    $("btnStart").disabled = false;
+    $("btnStart").textContent = "開始對話";
+    alert("無法訪問麥克風: " + e.message);
+  }
+};
+$("btnReset").onclick = () => { player.flush(); finishPartial(true); send({type:"reset"}); };
+</script>
+</body>
+</html>
