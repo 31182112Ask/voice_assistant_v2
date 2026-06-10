@@ -92,6 +92,7 @@ pipeline:
   instant_ack_enabled: false    # 默認不插入固定 ACK; 需要極低感知首音時再開
   instant_ack_text: ""
   instant_ack_cache: false      # 啟動時離線預合成 ACK, 回合中直接下發 PCM
+  tts_stream_input: true        # Kyutai: LLM chunk 流式餵入同一個 TTS state
   first_chunk_max_words: 5      # 首塊最多單詞數: LLM 流一湊夠這麼多詞(或先遇到
                                 # 逗號/句號)立刻送 CSM 合成 → 首音延遲由
                                 # 「整句生成時間」降為「~1 秒音頻的生成時間」

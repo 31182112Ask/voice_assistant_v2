@@ -238,6 +238,42 @@ async def measure_model_first_audio(llm: OllamaLLM, tts, cfg, prompt: str) -> di
     min_w = getattr(pcfg, "first_chunk_min_words", 1) if pcfg else 1
     started = time.perf_counter()
 
+    if (getattr(pcfg, "tts_stream_input", False)
+            and hasattr(tts, "synthesize_text_stream")):
+        first_token_ms: float | None = None
+
+        async def tokens():
+            nonlocal first_token_ms
+            async for token in llm.stream_speakable_chunks(
+                    [{"role": "user", "content": prompt}],
+                    first_chunk_max_words=max_w,
+                    first_chunk_min_words=min_w):
+                if first_token_ms is None:
+                    first_token_ms = _ms(started)
+                yield token + " "
+
+        interrupt = threading.Event()
+        final_text = ""
+        async for pcm, text in tts.synthesize_text_stream(tokens(), 0, interrupt):
+            if text is not None:
+                final_text = text
+                continue
+            return {
+                "prompt": prompt,
+                "strategy": "tts_stream_in",
+                "chunk": final_text,
+                "llm_first_chunk_ms": round(first_token_ms, 1)
+                if first_token_ms is not None else None,
+                "model_first_audio_ms": round(_ms(started), 1),
+            }
+        return {
+            "prompt": prompt,
+            "strategy": "tts_stream_in",
+            "llm_first_chunk_ms": round(first_token_ms, 1)
+            if first_token_ms is not None else None,
+            "model_first_audio_ms": None,
+        }
+
     async def first_llm_chunk() -> tuple[str, float | None]:
         stream = llm.stream_speakable_chunks(
             [{"role": "user", "content": prompt}],
@@ -370,6 +406,10 @@ async def main() -> None:
             "instant_ack_cache": bool(
                 getattr(getattr(cfg, "pipeline", None),
                         "instant_ack_pcm", None) is not None
+            ),
+            "tts_stream_input": bool(
+                getattr(getattr(cfg, "pipeline", None),
+                        "tts_stream_input", False)
             ),
             "first_chunk_max_words": getattr(getattr(cfg, "pipeline", None), "first_chunk_max_words", None),
             "first_chunk_min_words": getattr(getattr(cfg, "pipeline", None), "first_chunk_min_words", None),

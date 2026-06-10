@@ -142,6 +142,47 @@ class Session:
                 getattr(vcfg, "every_chunk", True) if vcfg else True
             )
 
+            if (getattr(pcfg, "tts_stream_input", False)
+                    and hasattr(self.tts, "synthesize_text_stream")):
+                first_audio = True
+                logged_first_token = False
+
+                async def token_stream():
+                    nonlocal logged_first_token
+                    async for token in self.llm.stream_speakable_chunks(
+                            self.history, max_w, min_w):
+                        if not logged_first_token:
+                            logged_first_token = True
+                            if t0 is not None:
+                                log.info(
+                                    "[lat] llm_first_chunk=%.0fms (%r)",
+                                    (time.monotonic() - t0) * 1000, token)
+                        yield token + " "
+
+                async for pcm, final_text in self.tts.synthesize_text_stream(
+                        token_stream(), 0, interrupt):
+                    if interrupt.is_set():
+                        break
+                    if final_text is not None:
+                        if final_text.strip():
+                            await self.send_json(
+                                {"type": "assistant_sentence",
+                                 "text": final_text.strip()})
+                            spoken.append(final_text.strip())
+                        continue
+                    if pcm.size == 0:
+                        continue
+                    if first_audio:
+                        first_audio = False
+                        if t0 is not None:
+                            log.info(
+                                "[lat] FIRST AUDIO=%.0fms (stream-in)",
+                                (time.monotonic() - t0) * 1000)
+                        await self._set_state("speaking")
+                    await self._send_audio(pcm)
+                await self.send_json({"type": "assistant_done"})
+                return
+
             async def produce() -> None:
                 try:
                     async for chunk in self.llm.stream_speakable_chunks(
