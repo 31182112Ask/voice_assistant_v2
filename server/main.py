@@ -149,6 +149,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         "output_sr": cfg.audio.output_sample_rate,
     }))
     greet_task = asyncio.create_task(session.greet())
+    # 主動發話無需後台計時任務: 時鐘由音頻流驅動 (見 orchestrator._tick_silence)
     try:
         while True:
             msg = await ws.receive()

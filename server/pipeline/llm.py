@@ -164,6 +164,22 @@ class OllamaLLM:
             return head.strip(), buf[idx:]
         return None, buf
 
+    async def plan_followup(self, history: list[dict],
+                            plan_prompt: str,
+                            max_tokens: int = 60) -> str:
+        """讓 LLM 在回覆結束後自主排程下一句主動發話。
+
+        返回原始單行計劃文本, 由調用方解析:
+          "NONE"                          → 不排程
+          "WAIT=18 | Still mulling it over?" → 18 秒後說這句
+        """
+        msgs = [
+            {"role": "system", "content": self.system_prompt},
+            *history,
+            {"role": "user", "content": plan_prompt},
+        ]
+        return (await self._collect(msgs, max_tokens=max_tokens)).strip()
+
     async def _collect(self, messages: list[dict], max_tokens: int) -> str:
         payload = {
             "model": self.model,

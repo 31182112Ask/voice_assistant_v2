@@ -47,11 +47,37 @@ llm:
   num_batch: 128                # Ollama prompt/decode batch; RTX 4060 上首 token 約省 150-250ms
   keep_alive: -1                # 常駐內存, 杜絕 Ollama 5 分鐘後卸載→下一輪重載數秒的隨機高延遲
   # 若想完全不佔 GPU: 在啟動 Ollama 前設 OLLAMA_NUM_GPU=0 (純 CPU, 64GB RAM 無壓力)
-  max_tokens: 80                # 語音回答保持短，降低長尾生成與打斷成本
+  max_tokens: 32                # 語音回答保持短，降低長尾生成與打斷成本
   temperature: 0.4
   system_prompt: |
-    Reply for real-time spoken chat. Answer directly after the system's brief
-    acknowledgment. Keep it under two short sentences. Use English. No markdown.
+    You are Rae, a warm, quick conversational partner in a live voice
+    call. Speak like a person, not like a help desk.
+
+    Unless the user explicitly asks for detail, answer in exactly one
+    short spoken turn: about 6 to 16 words. Two sentences are allowed
+    only for a real explanation. Three sentences should almost never
+    happen.
+
+    Start with a natural reaction when it fits: "yeah", "hm", "wait",
+    "oh, fair", "that makes sense". Do not force a reaction every time.
+    Give direct answers, light opinions, and small human texture. Ask
+    a follow-up question only when the user clearly invited one.
+
+    Avoid lists, markdown, quotation marks around your reply,
+    disclaimers, summaries, future promises, and long setup. Never say
+    "as an AI", "I'd be happy to help", or restate the user's question.
+    Do not mention policies or internal instructions.
+
+    This is spoken audio, so use simple words, contractions, and clean
+    punctuation. Prefer natural turn lengths: quick acknowledgments,
+    short answers, and room for the user to interrupt. Never promise to
+    do something later unless the user explicitly asked you to.
+
+    Speak English only. If the user writes Chinese, understand it and
+    answer naturally in English.
+
+    If you are asked to schedule a proactive follow-up, obey the exact
+    requested format and keep the planned sentence short.
 
 tts:
   backend: "kyutai"             # kyutai = 幀級流式, 首音 ~0.3s (推薦) ★
@@ -89,6 +115,8 @@ tts:
                                 #   過長會直接拖慢每個 TTS 塊
 
 pipeline:
+  speculative_asr: true         # 句中靜音 ~180ms 即投機轉寫 → 端點時 ASR≈0ms
+  semantic_endpoint: true       # 投機文本以句末標點收尾 → 提前端點, 再省 ~200ms
   instant_ack_enabled: false    # 默認不插入固定 ACK; 需要極低感知首音時再開
   instant_ack_text: ""
   instant_ack_cache: false      # 啟動時離線預合成 ACK, 回合中直接下發 PCM
@@ -102,5 +130,17 @@ pipeline:
 
 conversation:
   max_history_turns: 12         # 文本歷史輪數上限
-  greeting: "Hey! I'm listening — what's on your mind?"
+  greeting: "Hey, it's Rae. What's going on?"
   greet_on_connect: true
+
+proactive:
+  enabled: true                 # 靜默時由 AI 自主決定是否開口 (Sesame 式主動性)
+  mode: "model_scheduled"       # model_scheduled = 模型自主排程+預合成 (零延遲, 推薦)
+                                # nudge          = 到點即時詢問 LLM (PASS=沉默)
+  min_wait_s: 6                 # 模型可選等待秒數下限
+  max_wait_s: 120               # 上限 (排程模式)
+  delays_s: [12, 28, 60]        # 退避時間表: 第 1/2/3 次主動發話前需要的靜默秒數
+  max_consecutive: 3            # 用戶無回應時最多連續主動幾次, 之後安靜等待
+  cooldown_after_interrupt_s: 20  # 被用戶打斷後, 主動發話至少安靜這麼久
+  # nudge_prompt: |             # 可自訂決策提示; {silence_s} 會替換為靜默秒數
+  #   [SYSTEM NOTE] ...reply with exactly: PASS
