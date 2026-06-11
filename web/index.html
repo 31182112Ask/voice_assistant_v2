@@ -426,9 +426,12 @@ function addTurn(cls, who, text) {
   return d;
 }
 let partialAI = null, pendingLatency = null;
+let captionQueue = [], captionTimer = null;
 function ensureAssistantTurn(proactive) {
   if (!partialAI) {
     partialAI = addTurn("ai partial", "助手", "");
+    captionQueue = [];
+    if (captionTimer) { clearTimeout(captionTimer); captionTimer = null; }
     const who = partialAI.querySelector(".who");
     if (proactive) {
       const tag = document.createElement("span");
@@ -445,22 +448,53 @@ function ensureAssistantTurn(proactive) {
   }
   return partialAI;
 }
-function mergeCaption(base, delta) {
+function formatCaptionDelta(base, delta) {
   const text = (delta || "").trim();
-  if (!text) return base;
+  if (!text) return "";
   if (!base) return text;
-  if (/^[,.;:!?，。！？、]/.test(text)) return base + text;
-  if (/\s$/.test(base) || /^\s/.test(delta || "")) return base + text;
-  return base + " " + text;
+  if (/^[,.;:!?，。！？、]/.test(text)) return text;
+  if (/\s$/.test(base) || /^\s/.test(delta || "")) return text;
+  return " " + text;
+}
+function plannedCaptionText() {
+  if (!partialAI) return "";
+  return partialAI.querySelector(".txt").textContent + captionQueue.join("");
+}
+function captionDelay(ch) {
+  if (/[.!?。！？]/.test(ch)) return 120;
+  if (/[,;:，、]/.test(ch)) return 70;
+  if (ch === " ") return 18;
+  return 24;
+}
+function scheduleCaptionTick() {
+  if (captionTimer || !partialAI || captionQueue.length === 0) return;
+  captionTimer = setTimeout(() => {
+    captionTimer = null;
+    if (!partialAI) { captionQueue = []; return; }
+    const ch = captionQueue.shift();
+    const t = partialAI.querySelector(".txt");
+    t.textContent += ch;
+    logEl.scrollTop = logEl.scrollHeight;
+    scheduleCaptionTick();
+  }, captionDelay(captionQueue[0]));
 }
 function appendAssistantDelta(delta, proactive) {
-  const turn = ensureAssistantTurn(proactive);
-  const t = turn.querySelector(".txt");
-  t.textContent = mergeCaption(t.textContent, delta);
-  logEl.scrollTop = logEl.scrollHeight;
+  ensureAssistantTurn(proactive);
+  const addition = formatCaptionDelta(plannedCaptionText(), delta);
+  if (!addition) return;
+  captionQueue.push(...Array.from(addition));
+  scheduleCaptionTick();
 }
 function finishPartial(interrupted) {
   if (!partialAI) return;
+  if (interrupted) {
+    captionQueue = [];
+    if (captionTimer) { clearTimeout(captionTimer); captionTimer = null; }
+  } else if (captionQueue.length > 0) {
+    partialAI.querySelector(".txt").textContent += captionQueue.join("");
+    captionQueue = [];
+    if (captionTimer) { clearTimeout(captionTimer); captionTimer = null; }
+  }
   partialAI.classList.remove("partial");
   if (interrupted) {
     const who = partialAI.querySelector(".who");
