@@ -1,5 +1,6 @@
 param(
-    [switch]$CpuOllama
+    [switch]$CpuOllama,
+    [int]$Port = 8000
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,4 +18,10 @@ if ($CpuOllama) {
 $env:HF_HUB_OFFLINE = "1"
 $env:TRANSFORMERS_OFFLINE = "1"
 
-& ".\.venv\Scripts\python.exe" -m server.main
+& ".\scripts\stop_server.ps1" -Port $Port
+
+try {
+    & ".\.venv\Scripts\python.exe" -m server.main
+} finally {
+    & ".\scripts\stop_server.ps1" -Port $Port
+}
