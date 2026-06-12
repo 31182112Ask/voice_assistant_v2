@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import re
 import threading
@@ -48,6 +49,8 @@ class Session:
             fast_endpoint_after_ms=getattr(
                 cfg.vad, "fast_endpoint_after_ms", 900),
             speculate_after_ms=getattr(cfg.vad, "speculate_after_ms", 180),
+            onset_threshold=getattr(cfg.vad, "onset_threshold", None),
+            release_threshold=getattr(cfg.vad, "release_threshold", None),
         )
         self.state = "listening"
         self.history: list[dict] = []
@@ -70,6 +73,25 @@ class Session:
         self._plan_interrupt = threading.Event()
         self._scheduled: dict | None = None      # {frames, text, pcm}
 
+        # ---- Duplex 決策環 (mode: duplex, MiniCPM-o 式) ----
+        # 模型在幀時鐘上自主選擇「下一個決策檢查點」; 到點時讀取
+        # 真實上下文 (牆鐘時刻 / 雙方沉默時長 / 環境聲存在感 / 已嘗試
+        # 次數) 並三選一: SAY=說這句 / WAIT=再等 n 秒 / SLEEP=直到用戶
+        # 開口前不再主動。沒有任何固定時間表 —— 間隔由模型逐次決定。
+        self._next_check_frames: int | None = None   # 模型選定的檢查點
+        self._decide_task: asyncio.Task | None = None
+        self._duplex_sleep = False                   # SLEEP: 等用戶開口
+        self._ambient = collections.deque(            # ~12s 概率窗
+            maxlen=int(12 * self.FPS))
+        self._last_user_t: float | None = None       # 用戶上次說話 (monotonic)
+        self._last_ai_t: float | None = None         # AI 上次說話
+
+        # ---- 投機 LLM 預啟動 (speculative prefill) ----
+        # 投機 ASR 完成後, 端點到來前的剩餘靜默是純等待 —— 把 LLM 流
+        # 也投機啟動, 首塊在端點時刻多半已就緒 (LLM 移出關鍵路徑)。
+        # 用戶續說 → 與投機轉寫一同作廢。
+        self._primer: dict | None = None             # {text, queue, task}
+
         # ---- 投機轉寫 + 語義端點 (延遲主軸優化) ----
         # 句中靜音 ~180ms 即對「語音至此」做投機 ASR; 端點到來時轉寫
         # 多半已完成 → ASR 移出關鍵路徑。若投機文本以句末標點收尾,
@@ -81,9 +103,13 @@ class Session:
     # ================= 入口: 上行音頻與控制消息 =================
     async def on_audio(self, audio_16k: np.ndarray) -> None:
         for res in self.vad.process(audio_16k):
+            self._ambient.append(res.prob)
             await self._tick_silence(res)   # 主動發話的時鐘: 逐幀推進
             if res.is_voiced:
                 self._invalidate_speculation()   # 又開口, 投機作廢
+                if self._decide_task is not None:
+                    self._decide_task.cancel()   # 用戶開口, 決策作廢
+                    self._decide_task = None
             elif res.speculative_segment is not None:
                 self._start_speculation(res.speculative_segment)
             # ---- barge-in: AI 思考/說話期間檢測到持續用戶語音 ----
@@ -150,6 +176,61 @@ class Session:
             self._spec_task = None
         self._spec_text = None
         self._spec_len = 0
+        self._cancel_primer()
+
+    # ---------- 投機 LLM 預啟動 ----------
+    def _cancel_primer(self) -> None:
+        primer, self._primer = self._primer, None
+        if primer is not None and primer["task"] is not None:
+            primer["task"].cancel()
+
+    def _start_primer(self, text: str) -> None:
+        """端點前提前打開 LLM 流, 首塊緩存進隊列等 _respond 接管。"""
+        pcfg = getattr(self.cfg, "pipeline", None)
+        if pcfg is not None and not getattr(pcfg, "speculative_llm", True):
+            return
+        if self._respond_task is not None:       # 正有回應在跑, 不投機
+            return
+        self._cancel_primer()
+        q: asyncio.Queue = asyncio.Queue()
+        msgs = [*self.history, {"role": "user", "content": text}]
+        max_w, min_w = self._first_chunk_limits()
+
+        async def run() -> None:
+            try:
+                async for chunk in self.llm.stream_speakable_chunks(
+                        msgs, max_w, min_w):
+                    await q.put(chunk)
+                await q.put(None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                log.warning("primer failed: %s", e)
+                await q.put(None)
+
+        self._primer = {"text": text, "queue": q,
+                        "task": asyncio.create_task(run()),
+                        "t0": time.monotonic()}
+        log.info("[lat] llm primer started (pre-endpoint)")
+
+    def _take_primer(self, text: str) -> dict | None:
+        """端點時取走匹配的 primer; 文本不一致則作廢。"""
+        primer, self._primer = self._primer, None
+        if primer is None:
+            return None
+        if primer["text"] != text:
+            if primer["task"] is not None:
+                primer["task"].cancel()
+            return None
+        log.info("[lat] llm primer hit (started %.0fms before endpoint)",
+                 (time.monotonic() - primer["t0"]) * 1000)
+        return primer
+
+    def _first_chunk_limits(self) -> tuple[int, int]:
+        pcfg = getattr(self.cfg, "pipeline", None)
+        max_w = getattr(pcfg, "first_chunk_max_words", 9) if pcfg else 9
+        min_w = getattr(pcfg, "first_chunk_min_words", 2) if pcfg else 2
+        return max_w, min_w
 
     async def _speculate(self, segment: np.ndarray) -> None:
         """句中靜音時對「語音至此」做轉寫; 投機期間若用戶續說則被作廢。
@@ -160,6 +241,8 @@ class Session:
             self._spec_text = text
             log.info("[lat] spec_asr done (%.1fs audio): %r",
                      len(segment) / 16000, text[:50])
+            if text and len(text.strip()) >= 2:
+                self._start_primer(text)   # LLM 同步移出關鍵路徑
             pcfg = getattr(self.cfg, "pipeline", None)
             semantic = (getattr(pcfg, "semantic_endpoint", True)
                         if pcfg else True)
@@ -199,6 +282,8 @@ class Session:
         """文字輸入: 開會/夜深不便說話時用打字, 回應仍走語音。"""
         log.info("USER (text): %s", text)
         t0 = time.monotonic()
+        self._last_user_t = t0
+        self._duplex_sleep = False
         self._proactive_count = 0
         self._silent_frames = 0
         self._cancel_plan()
@@ -223,6 +308,9 @@ class Session:
             return
         log.info("USER (%.1fs): %s", dur, text)
         log.info("[lat] asr=%.0fms", (t_asr - t0) * 1000)
+        primer = self._take_primer(text)   # 投機 LLM 命中 → 首塊已在路上
+        self._last_user_t = time.monotonic()
+        self._duplex_sleep = False         # 用戶開口, 解除 SLEEP
         self._proactive_count = 0          # 用戶回話, 主動退避歸零
         self._silent_frames = 0
         self._cancel_plan()                # 沉默前提失效, 排程作廢
@@ -233,14 +321,17 @@ class Session:
 
         self.history.append({"role": "user", "content": text})
         self._trim_history()
+        if hasattr(self.asr, "set_context"):
+            self.asr.set_context(self.history)   # 下一輪識別的上下文偏置
         self.tts.add_user_context(text, segment)
 
         self._tts_interrupt = threading.Event()
-        self._respond_task = asyncio.create_task(self._respond(t0))
+        self._respond_task = asyncio.create_task(self._respond(t0, primed=primer))
 
     async def _respond(self, t0: float | None = None,
                        messages: list[dict] | None = None,
-                       proactive: bool = False) -> None:
+                       proactive: bool = False,
+                       primed: dict | None = None) -> None:
         spoken: list[str] = []
         interrupt = self._tts_interrupt
         msgs = messages if messages is not None else self.history
@@ -250,8 +341,7 @@ class Session:
             # 主動模式: 不顯示「思考」, LLM 先靜默決定要不要開口 (PASS = 沉默)
             queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=4)
             pcfg = getattr(self.cfg, "pipeline", None)
-            max_w = getattr(pcfg, "first_chunk_max_words", 9) if pcfg else 9
-            min_w = getattr(pcfg, "first_chunk_min_words", 2) if pcfg else 2
+            max_w, min_w = self._first_chunk_limits()
             first_history = (
                 getattr(pcfg, "first_chunk_history_context", False)
                 if pcfg else False
@@ -262,10 +352,24 @@ class Session:
             )
 
             async def chunk_source():
-                """LLM 塊流; 主動模式下首塊若為 PASS 則整輪靜默。"""
+                """LLM 塊流; 投機 primer 命中時直接消費已開的流;
+                主動模式下首塊若為 PASS 則整輪靜默。"""
                 first_chunk = True
-                async for chunk in self.llm.stream_speakable_chunks(
-                        msgs, max_w, min_w):
+
+                async def raw():
+                    if primed is not None:
+                        pq = primed["queue"]
+                        while True:
+                            c = await pq.get()
+                            if c is None:
+                                return
+                            yield c
+                    else:
+                        async for c in self.llm.stream_speakable_chunks(
+                                msgs, max_w, min_w):
+                            yield c
+
+                async for chunk in raw():
                     chunk = chunk.strip().strip('"\'')
                     if not chunk:
                         continue
@@ -418,8 +522,11 @@ class Session:
             log.exception("respond failed")
             await self.send_json({"type": "error", "message": str(e)})
         finally:
+            if primed is not None and primed["task"] is not None:
+                primed["task"].cancel()
             if spoken:
                 content = " ".join(spoken)
+                self._last_ai_t = time.monotonic()
                 if proactive:
                     self._proactive_count += 1
                     log.info("proactive: 第 %d 次主動發話: %s",
@@ -475,8 +582,28 @@ class Session:
         if self._proactive_count >= max_consec:
             return                               # 退避用盡, 安靜等用戶
 
+        mode = getattr(pcfg, "mode", "nudge")
+
+        # ---- 模式 duplex: MiniCPM-o 式決策環 —— 模型自選檢查點 ----
+        # 幀時鐘推進到「模型上次自己選定的檢查時刻」→ 喚起一次決策;
+        # 決策讀取真實上下文+時間信息, 輸出 SAY / WAIT / SLEEP。
+        # 沒有固定時間表: 間隔由模型逐次決定, SLEEP 後時鐘休眠直到用戶開口。
+        if mode == "duplex":
+            if self._duplex_sleep or self._decide_task is not None:
+                return
+            if self._next_check_frames is None:
+                # 回合剛結束尚未播種 (或冷啟動): 用 min_wait 播種首個檢查點
+                min_w = int(getattr(pcfg, "min_wait_s", 6))
+                self._next_check_frames = int(min_w * self.FPS)
+            if self._silent_frames < self._next_check_frames:
+                return
+            self._silent_frames = 0
+            self._next_check_frames = None
+            self._decide_task = asyncio.create_task(self._duplex_decide())
+            return
+
         # ---- 模式 A: model_scheduled — 模型已自主排程, 到點播緩存 ----
-        if getattr(pcfg, "mode", "nudge") == "model_scheduled":
+        if mode == "model_scheduled":
             plan = self._scheduled
             if plan is None or plan.get("pcm") is None:
                 return                           # 模型決定不說 / 還在合成
@@ -497,6 +624,124 @@ class Session:
         silence_s = int(self._silent_frames / self.FPS)
         self._silent_frames = 0                  # 觸發即清零 (PASS 也重新累計)
         await self._start_proactive(silence_s)
+
+    # ---------- 模式 duplex: MiniCPM-o 式決策環 ----------
+    # 每個檢查點, 模型看到一個「感知塊」—— 與 MiniCPM-o 的時分複用思路
+    # 同構: 流式上下文按時間片進入模型, 模型每片自主決定發聲或保持沉默。
+    # 這裡的時間片不是固定週期, 而是模型上一次自己選擇的 WAIT。
+    DEFAULT_DUPLEX_PROMPT = (
+        "[PERCEPTION — not spoken by the user]\n"
+        "local time: {clock}\n"
+        "user last spoke: {user_s}s ago\n"
+        "you last spoke: {ai_s}s ago\n"
+        "mic ambience: {ambience}\n"
+        "unanswered proactive turns: {attempts}\n\n"
+        "You are in a live call and the line is quiet. Decide for yourself "
+        "whether this silence wants company or space. Consider the hour "
+        "(late night usually wants space), the ambience (a fully dead mic "
+        "may mean they stepped away), how the last exchange ended, and how "
+        "many times you've already spoken into silence.\n"
+        "Reply with EXACTLY one line, one of:\n"
+        "SAY=<one short natural sentence in your own voice — the way a "
+        "friend breaks a lull, never an assistant checking in>\n"
+        "WAIT=<seconds, {min_wait}-{max_wait}, your own choice of when to "
+        "reconsider>\n"
+        "SLEEP   (stay quiet until they speak again)"
+    )
+    _SAY_RE = re.compile(r"SAY\s*=\s*(.+)", re.S | re.I)
+    _WAIT_RE = re.compile(r"WAIT\s*=\s*(\d+)", re.I)
+
+    def _ambience_summary(self) -> str:
+        """環境聲存在感: VAD 概率窗的分佈 → 模型可讀的一句話。"""
+        if not self._ambient:
+            return "no signal"
+        arr = np.fromiter(self._ambient, dtype=np.float32)
+        faint = float(np.mean((arr > 0.12) & (arr < self.cfg.vad.threshold)))
+        if faint > 0.25:
+            return "faint sounds — someone seems nearby"
+        if faint > 0.06:
+            return "occasional rustle"
+        return "completely silent"
+
+    async def _duplex_decide(self) -> None:
+        pcfg = self.cfg.proactive
+        try:
+            now = time.monotonic()
+            user_s = int(now - self._last_user_t) if self._last_user_t else -1
+            ai_s = int(now - self._last_ai_t) if self._last_ai_t else -1
+            min_w = int(getattr(pcfg, "min_wait_s", 6))
+            max_w = int(getattr(pcfg, "max_wait_s", 120))
+            tmpl = getattr(pcfg, "duplex_prompt", None) or self.DEFAULT_DUPLEX_PROMPT
+            prompt = (tmpl
+                      .replace("{clock}", time.strftime("%A %H:%M"))
+                      .replace("{user_s}", str(user_s) if user_s >= 0 else "never")
+                      .replace("{ai_s}", str(ai_s) if ai_s >= 0 else "never")
+                      .replace("{ambience}", self._ambience_summary())
+                      .replace("{attempts}", str(self._proactive_count))
+                      .replace("{min_wait}", str(min_w))
+                      .replace("{max_wait}", str(max_w)))
+            raw = (await self.llm.decide_proactive(self.history, prompt)).strip()
+            first = raw.splitlines()[0].strip() if raw else ""
+            log.info("duplex: 決策 → %r", first[:80])
+
+            m = self._SAY_RE.search(first)
+            if m:
+                text = m.group(1).strip().strip('"\'')
+                if text:
+                    # 仍處於對話空檔才開口 (決策期間用戶可能已說話)
+                    if (self.state == "listening"
+                            and self._respond_task is None
+                            and not self._client_playing):
+                        self._tts_interrupt = threading.Event()
+                        self._respond_task = asyncio.create_task(
+                            self._speak_text(text))
+                    return
+            m = self._WAIT_RE.search(first)
+            if m:
+                wait = max(min_w, min(max_w, int(m.group(1))))
+                log.info("duplex: 模型選擇 %ds 後再評估", wait)
+                self._next_check_frames = int(wait * self.FPS)
+                return
+            # SLEEP 或無法解析 → 安靜等用戶
+            log.info("duplex: 模型選擇沉默 (SLEEP)")
+            self._duplex_sleep = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.warning("duplex decide failed: %s", e)
+            self._next_check_frames = int(
+                getattr(pcfg, "max_wait_s", 120) * self.FPS / 2)
+        finally:
+            self._decide_task = None
+
+    async def _speak_text(self, text: str) -> None:
+        """直接把一句既定文本流式合成播出 (duplex SAY 路徑)。"""
+        interrupt = self._tts_interrupt
+        got = False
+        try:
+            async for pcm in self.tts.synthesize_stream(text, 0, interrupt):
+                if interrupt.is_set():
+                    break
+                if not got:
+                    got = True
+                    await self._set_state("speaking")
+                    await self.send_json({"type": "assistant_sentence",
+                                          "text": text, "proactive": True})
+                await self._send_audio(pcm)
+            if got and not interrupt.is_set():
+                await self.send_json({"type": "assistant_done"})
+                self.history.append({"role": "assistant", "content": text})
+                self._trim_history()
+                self._proactive_count += 1
+                self._last_ai_t = time.monotonic()
+                log.info("duplex: 第 %d 次主動發話: %s",
+                         self._proactive_count, text)
+        finally:
+            self._respond_task = None
+            self._silent_frames = 0
+            if not self._client_playing and self.state != "listening":
+                await self._set_state("listening")
+            self._schedule_plan()              # 播種下一個檢查點
 
     async def _start_proactive(self, silence_s: int) -> None:
         pcfg = self.cfg.proactive
@@ -528,13 +773,21 @@ class Session:
     _PLAN_RE = re.compile(r"WAIT\s*=\s*(\d+)\s*\|\s*(.+)", re.S)
 
     def _schedule_plan(self) -> None:
-        """回覆結束後觸發: LLM 規劃 → TTS 預合成 → 存緩存等流時鐘。"""
+        """回覆結束後觸發: 按模式播種下一步主動性。"""
         pcfg = getattr(self.cfg, "proactive", None)
         if not pcfg or not getattr(pcfg, "enabled", False):
             return
-        if getattr(pcfg, "mode", "nudge") != "model_scheduled":
-            return
         if self._proactive_count >= int(getattr(pcfg, "max_consecutive", 3)):
+            return
+        mode = getattr(pcfg, "mode", "nudge")
+        if mode == "duplex":
+            # 不立刻問模型 —— 只播種首個檢查點 (min_wait), 屆時模型
+            # 帶著「沉默已持續多久」等真實感知再做決策, 更貼近時分複用。
+            if not self._duplex_sleep:
+                min_w = int(getattr(pcfg, "min_wait_s", 6))
+                self._next_check_frames = int(min_w * self.FPS)
+            return
+        if mode != "model_scheduled":
             return
         self._cancel_plan()
         self._plan_interrupt = threading.Event()
@@ -547,6 +800,10 @@ class Session:
             self._plan_task.cancel()
             self._plan_task = None
         self._scheduled = None
+        if self._decide_task is not None:        # duplex: 決策作廢
+            self._decide_task.cancel()
+            self._decide_task = None
+        self._next_check_frames = None
 
     async def _make_plan(self) -> None:
         pcfg = self.cfg.proactive

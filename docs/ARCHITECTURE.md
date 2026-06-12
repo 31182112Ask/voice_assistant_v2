@@ -242,3 +242,77 @@ on_audio → 每個 VAD 幀 → _tick_silence (無 asyncio 計時任務)
 停發音頻幀 → 服務端流時鐘凍結, 主動發話自然暫停)、每輪首音延遲
 徽章 (說話人欄下方, 如 "1.2s")、逐字稿導出 (markdown)、斷線自動
 重連 (指數退避, 最大 10s)。
+
+## 7. 投機級聯 (speculative cascade)
+
+把「等待」全部換成「並行」: 用戶句中停頓 ~180ms 起, 各級就提前開跑——
+
+```
+用戶語音 ────────────╖ 停頓180ms        端點(192-320ms / 語義端點即刻)
+                     ╟─ 投機 ASR ──完成─╢
+                     ║                  ╟─ 投機 LLM (primer) ──首塊─╢
+                     ║                  ║   端點時首塊多半已在路上    ╟─ TTS 首幀
+用戶續說 → 全部作廢 ──╜                  ║                          ║  (~80ms)
+                                       ╙── primer 文本≠最終轉寫 → 作廢
+```
+
+端點時刻的關鍵路徑只剩: 取已完成的轉寫 (0ms) → 接管已開的 LLM 流 →
+Kyutai 幀級出聲。理想命中下 FIRST AUDIO ≈ 300-600ms, 已進入人類
+話輪交接區間 (Jacoby 2024: 類人對話要求在說話者結束前就開始理解與生成)。
+
+## 8. Duplex 主動發話 (MiniCPM-o 式決策環)
+
+無系統定時器 —— 時間以「幀」的形式存在於音頻流裡 (32ms/幀), 與
+MiniCPM-o 的時分複用同構: 流式上下文按時間片進入模型, 模型每片自主
+決定發聲或沉默。差別僅在: 級聯架構下時間片不是固定週期, 而是
+**模型上一次自己選擇的 WAIT**。
+
+每個檢查點, 模型收到一個感知塊 (PERCEPTION):
+
+```
+local time: Friday 23:41          ← 牆鐘 (深夜自然傾向沉默)
+user last spoke: 47s ago          ← 雙方沉默時長
+you last spoke: 32s ago
+mic ambience: faint sounds — someone seems nearby   ← VAD 概率窗統計
+unanswered proactive turns: 1     ← 已嘗試次數 (自然退避)
+```
+
+並三選一: `SAY=<一句話>` / `WAIT=<n 秒後再評估>` / `SLEEP` (直到用戶
+開口)。所有間隔由模型逐次決定; 用戶開口、打斷、靜音(斷流)都會即時
+作廢決策環。`max_consecutive` 是最後的硬保險。
+
+## 9. 接縫處理 (前端)
+
+- 抖動緩衝: 每輪首塊預留 100ms; 斷流恢復補 60ms + 3ms 淡入 (無爆音)
+- 打斷淡出: flush 先 18ms 指數衰減總線增益再停源, barge-in 是
+  「讓位」而非「掐斷」
+- playback_done 去抖: 僅當服務端已宣告 assistant_done 且播放源排空
+  才上報 —— 塊間空隙不再誤觸發字幕定格 / 狀態誤切
+
+## 10. 識別起始點與準確率 (本輪修復)
+
+起始點三根因與修法:
+1. 採集端「丟樣本」降採樣無抗混疊 → 高頻折疊進語音帶。改為源窗口
+   平均 (48k→16k 即 3 點 boxcar, 20kHz 混疊能量降至 24%, ~12dB)。
+2. 單閾值 0.55 對輕聲起音偏高, 確認窗 250ms 而 pre-roll 僅 240ms。
+   改為遲滯雙閾值 (onset 0.40 / release 0.35 / barge-in 仍按 0.55
+   嚴格計時) + pre-roll 480ms; 段間不再清空 pre-roll。
+3. whisper 對貼邊起始易丟首詞 → 段首墊 250ms / 段尾墊 150ms 靜音。
+
+準確率 (顯存增量 +0.6GB):
+- large-v3-turbo int8_float16 (~1.5GB), 詞錯率約為 small 的一半
+- beam 3: 投機轉寫已把 ASR 移出關鍵路徑, beam 耗時被靜默期吸收
+- initial_prompt 上下文偏置: 最近對話文本, 專名/話題詞顯著提升
+- RMS 能量門限: 噪聲段不再幻聽出文字
+
+## 11. 推理平台: llama.cpp (默認)
+
+| | llama.cpp llama-server | vLLM | Ollama |
+|---|---|---|---|
+| Windows | 原生 ★ | WSL 限定 | 原生 |
+| 顯存控制 | -ngl/-c 細粒度 ★ | 默認預佔 90% 做 KV | 粗粒度 |
+| 單流小模型 TTFT | 最低 ★ | 無優勢 (吞吐型) | 多一層調度 |
+
+實現為 OpenAI 兼容客戶端 (`OpenAICompatLLM`), llama.cpp 與 vLLM 共用 ——
+想試 vLLM 只需把 `llm.base_url` 指向它。`chat_template_kwargs.
+enable_thinking=false` 兩者均支持, 用於關閉 Qwen3 系思考段。

@@ -28,6 +28,7 @@ class VadEvent(Enum):
 class VadResult:
     event: VadEvent = VadEvent.NONE
     is_voiced: bool = False                 # 當前幀是否為語音
+    prob: float = 0.0                       # 原始語音概率 (環境存在感統計用)
     voiced_ms: int = 0                      # 當前連續語音時長 (打斷檢測用)
     segment: np.ndarray | None = field(default=None)  # SPEECH_END 時的完整語音段
     # 投機段: 句中靜音達 speculate_after_ms 時發出一次「語音到目前為止」的快照。
@@ -44,10 +45,21 @@ class StreamingVAD:
                  min_silence_ms: int, pre_roll_ms: int,
                  fast_min_silence_ms: int | None = None,
                  fast_endpoint_after_ms: int = 900,
-                 speculate_after_ms: int = 180):
+                 speculate_after_ms: int = 180,
+                 onset_threshold: float | None = None,
+                 release_threshold: float | None = None):
         from silero_vad import load_silero_vad
         self.model = load_silero_vad()  # CPU, 極輕量
         self.threshold = threshold
+        # 雙閾值遲滯 (起始點保護):
+        #   onset   — 進入語音用更低的門檻, 輕聲起音的首音節不再被裁
+        #   release — 已在語音中時用更低的門檻維持, 句中弱輔音不致誤斷
+        # 誤觸發由 min_speech_ms 確認窗過濾; barge-in 仍用嚴格 threshold。
+        self.onset_threshold = (onset_threshold if onset_threshold is not None
+                                else max(0.25, threshold - 0.15))
+        self.release_threshold = (release_threshold
+                                  if release_threshold is not None
+                                  else max(0.20, threshold - 0.20))
         self.frame_ms = int(1000 * self.FRAME_SAMPLES / self.SAMPLE_RATE)  # 32ms
         self.min_speech_frames = max(1, min_speech_ms // self.frame_ms)
         self.min_silence_frames = max(1, min_silence_ms // self.frame_ms)
@@ -67,6 +79,7 @@ class StreamingVAD:
     def reset(self) -> None:
         self._in_speech = False
         self._voiced_run = 0
+        self._strict_run = 0
         self._silence_run = 0
         self._segment_frames = 0
         self._segment: list[np.ndarray] = []
@@ -88,9 +101,17 @@ class StreamingVAD:
     # ------------------------------------------------------------------
     def _step(self, frame: np.ndarray) -> VadResult:
         prob = self.model(torch.from_numpy(frame), self.SAMPLE_RATE).item()
-        voiced = prob >= self.threshold
-        res = VadResult(is_voiced=voiced)
+        # 分段判定用遲滯雙閾值; 打斷判定 (voiced_ms) 用嚴格閾值抗回聲
+        gate = (self.release_threshold if self._in_speech
+                else self.onset_threshold)
+        voiced = prob >= gate
+        strict = prob >= self.threshold
+        res = VadResult(is_voiced=voiced, prob=prob)
 
+        if strict:
+            self._strict_run += 1
+        else:
+            self._strict_run = 0
         if voiced:
             self._voiced_run += 1
             self._silence_run = 0
@@ -98,7 +119,7 @@ class StreamingVAD:
             self._silence_run += 1
             if not self._in_speech:
                 self._voiced_run = 0
-        res.voiced_ms = self._voiced_run * self.frame_ms
+        res.voiced_ms = self._strict_run * self.frame_ms
 
         if not self._in_speech:
             self._pre_roll.append(frame)
@@ -131,7 +152,7 @@ class StreamingVAD:
                 self._segment_frames = 0
                 self._segment = []
                 self._speculated = False
-                self._pre_roll.clear()
+                # 不清空 pre_roll: 緊接的下一句話仍有起點緩衝 (重疊無害)
                 res.event = VadEvent.SPEECH_END
                 res.segment = segment
         return res
@@ -150,5 +171,4 @@ class StreamingVAD:
         self._segment_frames = 0
         self._segment = []
         self._speculated = False
-        self._pre_roll.clear()
         return segment

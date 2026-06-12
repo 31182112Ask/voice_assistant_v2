@@ -9,5 +9,6 @@ latency_benchmark.json
 voice_assistant_v2_lowlatency.zip
 voices/*.wav
 voices/*.txt
+models/
 *.log
 .DS_Store

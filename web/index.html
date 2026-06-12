@@ -9,18 +9,37 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,360;0,9..144,560;1,9..144,360;1,9..144,460&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-tc-webfont@1.7.0/style.css" rel="stylesheet">
 <style>
+  /* ───────────────────────── 色彩:瓷白 / 石墨 雙生 ─────────────────────────
+     主軸不變:墨線是唯一主角。光只為聲音存在 —— 松綠屬於你,
+     暮金屬於助手;其餘一切保持紙與墨的安靜。                          */
   :root{
-    --paper:#EFF1EF;      /* 冷瓷白 */
-    --panel:#F8F9F8;
-    --ink:#232827;        /* 墨 */
-    --mist:#76817D;       /* 霧灰 */
-    --hairline:#DBE0DD;
-    --pine:#2F6B5D;       /* 松綠 — 只給「活的聲音」 */
-    --pine-soft:#2F6B5D22;
-    --clay:#A85B45;       /* 陶土 — 僅打斷/錯誤 */
+    --paper:#F2F3F0;          /* 冷瓷白 */
+    --ink:#212624;            /* 墨 */
+    --mist:#79847F;           /* 霧灰 */
+    --hairline:#DCE1DD;
+    --pine:#2F6B5D;           /* 松綠 — 你的聲音 */
+    --gold:#B98A4A;           /* 暮金 — 助手的聲音 (光暈用, 文字仍是墨) */
+    --clay:#A85B45;           /* 陶土 — 打斷 / 錯誤 */
+    --glass:rgba(248,249,248,.72);
+    --glow-a:rgba(47,107,93,.55);    /* 光暈雙色 */
+    --glow-b:rgba(185,138,74,.45);
     --serif:"Fraunces",serif;
     --kai:"LXGW WenKai TC","Noto Serif TC","Songti TC","KaiTi",serif;
     --mono:"Spline Sans Mono","SF Mono",Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#16191A;        /* 石墨 */
+      --ink:#E9EBE7;
+      --mist:#8B948F;
+      --hairline:#2B3331;
+      --pine:#74BCA6;
+      --gold:#D2A968;
+      --clay:#D08A6E;
+      --glass:rgba(24,28,29,.66);
+      --glow-a:rgba(116,188,166,.5);
+      --glow-b:rgba(210,169,104,.42);
+    }
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
@@ -28,12 +47,19 @@
     background:var(--paper);color:var(--ink);
     font-family:var(--kai);
     display:flex;flex-direction:column;align-items:center;
-    padding:clamp(18px,4vh,40px) 20px 28px;
+    padding:clamp(18px,4vh,40px) 20px 0;
+    transition:background .5s;
   }
-
   .sheet{width:min(680px,100%);display:flex;flex-direction:column;flex:1;min-height:0}
 
-  /* ── 頂欄:字標 + 連線 ── */
+  /* ── 載入編排: 各區塊依次浮現, 如紙上落墨的順序 ── */
+  @keyframes enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .masthead{animation:enter .6s .05s cubic-bezier(.2,.7,.3,1) both}
+  .trace-wrap{animation:enter .7s .18s cubic-bezier(.2,.7,.3,1) both}
+  .ledger{animation:enter .7s .32s cubic-bezier(.2,.7,.3,1) both}
+  .dock{animation:enter .7s .46s cubic-bezier(.2,.7,.3,1) both}
+
+  /* ── 頂欄 ── */
   .masthead{display:flex;align-items:baseline;gap:10px;padding-bottom:6px}
   .masthead .wordmark{
     font-family:var(--serif);font-weight:560;font-size:19px;
@@ -44,61 +70,69 @@
         font-family:var(--mono);font-size:10.5px;color:var(--mist)}
   .conn i{width:6px;height:6px;border-radius:50%;background:var(--hairline);
           outline:3px solid transparent;transition:background .4s,outline-color .4s}
-  .conn.on i{background:var(--pine);outline-color:var(--pine-soft)}
+  .conn.on i{background:var(--pine);outline-color:color-mix(in srgb,var(--pine) 18%,transparent);
+             animation:pulse 2.8s ease-in-out infinite}
+  @keyframes pulse{50%{outline-color:color-mix(in srgb,var(--pine) 6%,transparent)}}
 
-  /* ── 簽名元素:墨線 ── */
-  .trace-wrap{padding:clamp(14px,4vh,34px) 0 4px}
-  canvas#trace{display:block;width:100%;height:96px}
-  .state-row{
-    display:flex;align-items:baseline;justify-content:center;gap:10px;
-    padding:2px 0 clamp(12px,3vh,24px);min-height:38px;
+  /* ── 簽名:墨線 + 呼吸光暈 ── */
+  .trace-wrap{padding:clamp(14px,4vh,32px) 0 0}
+  canvas#trace{display:block;width:100%;height:104px}
+  .state-row{display:flex;justify-content:center;padding:6px 0 clamp(10px,2.6vh,20px)}
+  .state-pill{
+    display:inline-flex;align-items:baseline;gap:9px;
+    border:1px solid var(--hairline);border-radius:999px;
+    padding:6px 18px;background:var(--glass);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    transition:border-color .4s;
   }
-  .state-zh{
-    font-family:var(--serif);font-style:italic;font-weight:460;
-    font-size:21px;letter-spacing:.12em;
-    transition:opacity .18s ease;
-  }
-  .state-en{font-family:var(--mono);font-size:10px;color:var(--mist);
-            letter-spacing:.22em;text-transform:uppercase}
+  .state-zh{font-family:var(--serif);font-style:italic;font-weight:460;
+            font-size:16.5px;letter-spacing:.14em;transition:opacity .18s}
+  .state-en{font-family:var(--mono);font-size:9.5px;color:var(--mist);
+            letter-spacing:.24em;text-transform:uppercase}
   .state-row.swap .state-zh{opacity:0}
+  .state-pill.speaking{border-color:color-mix(in srgb,var(--gold) 45%,var(--hairline))}
+  .state-pill.listening{border-color:color-mix(in srgb,var(--pine) 35%,var(--hairline))}
+  /* 思考: 三點依次呼吸 */
+  .state-pill .dots{display:none;gap:4px;align-self:center}
+  .state-pill.thinking .dots{display:inline-flex}
+  .state-pill .dots i{width:3.5px;height:3.5px;border-radius:50%;background:var(--mist);
+                      animation:dot 1.2s ease-in-out infinite}
+  .state-pill .dots i:nth-child(2){animation-delay:.18s}
+  .state-pill .dots i:nth-child(3){animation-delay:.36s}
+  @keyframes dot{0%,100%{opacity:.25;transform:translateY(0)}
+                 40%{opacity:1;transform:translateY(-2px)}}
 
-  /* ── 逐字稿:手稿式 ── */
+  /* ── 逐字稿 ── */
   .ledger{
     flex:1;min-height:140px;overflow-y:auto;
     border-top:1px solid var(--hairline);
     scrollbar-width:thin;scrollbar-color:var(--hairline) transparent;
+    padding-bottom:14px;
   }
   .ledger:empty::after{
-    content:"按下「開始對話」，直接開口說話。助手說話時，你隨時開口即可打斷。";
+    content:"按下「開始對話」，直接開口。助手說話時，你隨時開口即可打斷;久未說話時，它也可能先開口。";
     display:block;text-align:center;color:var(--mist);
-    font-size:13.5px;letter-spacing:.05em;padding:46px 24px;
+    font-size:13.5px;letter-spacing:.05em;padding:46px 24px;line-height:2;
   }
   .turn{
     display:grid;grid-template-columns:64px 1fr;gap:14px;
     padding:13px 2px;border-bottom:1px solid var(--hairline);
+    animation:rise .35s ease both;
+    transition:background .3s;border-radius:6px;
   }
-  .turn .who{
-    font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
-    color:var(--mist);padding-top:5px;
-  }
-  .turn .who .tag{display:block;margin-top:3px;color:var(--clay);
+  .turn:hover{background:color-mix(in srgb,var(--ink) 3%,transparent)}
+  @keyframes rise{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  .turn .who{font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+             color:var(--mist);padding-top:5px}
+  .turn .who .tag{display:block;margin-top:4px;color:var(--clay);
                   letter-spacing:.08em;font-size:9.5px}
-  .turn .who .tag.pro{color:var(--mist)}
-  .turn .who .lat{display:block;margin-top:3px;font-size:9.5px;
-                  color:var(--mist);letter-spacing:.06em}
-
-  .composer{display:flex;gap:10px;padding-top:16px}
-  .composer input{
-    flex:1;min-width:0;font-family:var(--kai);font-size:14px;
-    color:var(--ink);background:var(--panel);
-    border:1px solid var(--hairline);border-radius:2px;
-    padding:10px 14px;transition:border-color .25s;
-  }
-  .composer input::placeholder{color:var(--mist);font-size:13px}
-  .composer input:focus{outline:none;border-color:var(--pine)}
-  .composer input:disabled{opacity:.45}
-  .turn .txt{font-size:15px;line-height:1.85;letter-spacing:.015em;
-             overflow-wrap:anywhere}
+  .turn .who .tag.pro{color:var(--gold)}
+  .turn .who .tag.pro::before{content:"✳ ";font-size:8px}
+  .turn .who .lat{display:block;margin-top:4px;font-size:9.5px;
+                  letter-spacing:.06em;color:var(--mist)}
+  .turn .who .lat.fast{color:var(--pine)}
+  .turn .who .lat.slow{color:var(--clay)}
+  .turn .txt{font-size:15px;line-height:1.85;letter-spacing:.015em;overflow-wrap:anywhere}
   .turn.user .txt{color:var(--pine)}
   .turn.ai.partial .txt::after{
     content:"";display:inline-block;width:1px;height:.95em;
@@ -108,27 +142,52 @@
   .turn.sys .txt{color:var(--clay);font-size:13.5px}
   @keyframes caret{50%{opacity:0}}
 
-  /* ── 操作 ── */
-  .actions{display:flex;gap:12px;justify-content:center;padding-top:20px}
-  button{
-    font-family:var(--mono);font-size:12px;letter-spacing:.14em;
-    color:var(--ink);background:transparent;
-    border:1px solid var(--hairline);border-radius:2px;
-    padding:11px 26px;cursor:pointer;
-    transition:border-color .25s,color .25s,background .25s;
+  /* ── 玻璃底欄:輸入 + 操作 ── */
+  .dock{
+    position:sticky;bottom:0;width:min(680px,100%);
+    padding:12px 0 max(16px,env(safe-area-inset-bottom));
+    background:linear-gradient(to top,var(--paper) 55%,transparent);
   }
-  button:hover{background:var(--panel);border-color:var(--mist)}
-  button.primary{border-color:var(--pine);color:var(--pine)}
-  button.primary:hover{background:var(--pine-soft)}
-  button:disabled{opacity:.4;cursor:default;background:transparent}
+  .dock-inner{
+    border:1px solid var(--hairline);border-radius:18px;
+    background:var(--glass);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    padding:10px 12px;display:flex;flex-direction:column;gap:9px;
+    box-shadow:0 6px 26px -18px rgba(0,0,0,.25);
+  }
+  .composer{display:flex;gap:10px}
+  .composer input{
+    flex:1;min-width:0;font-family:var(--kai);font-size:14px;
+    color:var(--ink);background:transparent;
+    border:none;border-bottom:1px solid var(--hairline);
+    padding:8px 4px;transition:border-color .25s;
+  }
+  .composer input::placeholder{color:var(--mist);font-size:13px}
+  .composer input:focus{outline:none;border-color:var(--pine)}
+  .composer input:disabled{opacity:.4}
+  .actions{display:flex;gap:10px;justify-content:center}
+  button{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;
+    color:var(--ink);background:transparent;
+    border:1px solid var(--hairline);border-radius:999px;
+    padding:9px 24px;cursor:pointer;
+    transition:border-color .25s,color .25s,background .25s,transform .15s;
+  }
+  button:hover{border-color:var(--mist)}
+  button:active{transform:scale(.97)}
+  button.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  button.primary:hover{opacity:.88}
+  button:disabled{opacity:.35;cursor:default;transform:none}
   button:focus-visible{outline:2px solid var(--pine);outline-offset:2px}
 
   @media (prefers-reduced-motion: reduce){
+    .turn{animation:none}
     .turn.ai.partial .txt::after{animation:none}
   }
   @media (max-width:480px){
     .turn{grid-template-columns:50px 1fr;gap:10px}
     .masthead .meta{display:none}
+    .actions button{padding:9px 16px}
   }
 </style>
 </head>
@@ -144,21 +203,28 @@
   <div class="trace-wrap">
     <canvas id="trace" aria-hidden="true"></canvas>
     <div class="state-row" id="stateRow" aria-live="polite">
-      <span class="state-zh" id="stateZh">離線</span>
-      <span class="state-en" id="stateEn">offline</span>
+      <span class="state-pill" id="statePill">
+        <span class="state-zh" id="stateZh">離線</span>
+        <span class="state-en" id="stateEn">offline</span>
+        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </span>
     </div>
   </div>
 
   <main class="ledger" id="log"></main>
 
-  <div class="composer">
-    <input id="textInput" placeholder="不方便說話時，打字也行 — Enter 送出" disabled
-           autocomplete="off" maxlength="500">
-  </div>
-  <div class="actions">
-    <button class="primary" id="btnStart">開始對話</button>
-    <button id="btnExport" disabled>下載逐字稿</button>
-    <button id="btnReset" disabled>清空記憶</button>
+  <div class="dock">
+    <div class="dock-inner">
+      <div class="composer">
+        <input id="textInput" placeholder="不方便說話時，打字也行 — Enter 送出" disabled
+               autocomplete="off" maxlength="500">
+      </div>
+      <div class="actions">
+        <button class="primary" id="btnStart">開始對話</button>
+        <button id="btnExport" disabled>下載逐字稿</button>
+        <button id="btnReset" disabled>清空記憶</button>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -172,15 +238,21 @@ let ws = null, audioCtx = null, workletNode = null, micStream = null;
 let outputSR = 24000, reconnectDelay = 1000;
 let started = false, muted = false;
 
-/* ════════ 墨線 (簽名元素): 由真實音頻驅動的 canvas 線 ════════ */
+/* ════════ 墨線 + 呼吸光暈 (簽名元素) ════════
+   線是墨;光暈只在有聲音時浮現 —— 松綠(你) 與 暮金(助手) 在線下
+   緩慢流動,強度跟隨真實音頻能量呼吸。Apple Intelligence 的「光」,
+   收斂進這套紙墨語彙裡。                                          */
 const trace = (() => {
   const cv = $("trace"), ctx = cv.getContext("2d");
-  const N = 320;                          // 環形緩衝點數
-  const amp = new Float32Array(N);        // 振幅歷史
-  const hue = new Float32Array(N);        // 0=墨(助手/閒) 1=松綠(你)
+  const N = 320;
+  const amp = new Float32Array(N);
+  const hue = new Float32Array(N);        // 0=助手/閒 1=你
   let micLevel = 0, vadOn = false, mode = "offline";
   let analyser = null, anaBuf = null;
-  let t = 0, dpr = 1;
+  let t = 0, dpr = 1, glow = 0;
+  const ripples = [];                     // {x:0..1, age, hue:'pine'|'gold'|'clay'}
+  let drop = null;                        // 閒置墨滴 {x, y, vy, landed}
+  let quietFrames = 0, nextDropAt = 900;  // 閒置計數 (60fps 幀)
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function resize(){
@@ -190,6 +262,9 @@ const trace = (() => {
   }
   new ResizeObserver(resize).observe(cv); resize();
 
+  function cssVar(name){
+    return getComputedStyle(document.body).getPropertyValue(name).trim();
+  }
   function outLevel(){
     if (!analyser) return 0;
     analyser.getFloatTimeDomainData(anaBuf);
@@ -200,33 +275,100 @@ const trace = (() => {
 
   function frame(){
     t += 1;
-    // 取當前能量: 聆聽→麥克風 / 說話→播放端, 二者取大以呈現搶話瞬間
     const out = outLevel();
     const level = Math.max(micLevel, out);
-    micLevel *= 0.86;                     // 峰值衰減
-    // 寫入環形緩衝 (整體左移一格)
+    micLevel *= 0.86;
     amp.copyWithin(0, 1); hue.copyWithin(0, 1);
-    amp[N-1] = amp[N-2] * 0.5 + Math.min(1, level * 3.2) * 0.5;  // 時間平滑
+    amp[N-1] = amp[N-2] * 0.5 + Math.min(1, level * 3.2) * 0.5;
     hue[N-1] = (vadOn && micLevel > out) ? 1 : 0;
+    // 光暈能量: 快攻慢衰的包絡
+    glow = Math.max(glow * 0.94, Math.min(1, level * 4));
 
     const w = cv.width, h = cv.height, mid = h / 2;
     ctx.clearRect(0, 0, w, h);
 
-    // 每點振幅 = 信號 + 遊走微波(閒置呼吸), 兩端收尖如一筆墨痕
-    const maxH = h * 0.42;
+    const maxH = h * 0.40;
     const A = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       const u = i / (N - 1);
-      const taper = Math.sin(Math.PI * u) ** 0.6;          // 端點漸隱
+      const taper = Math.sin(Math.PI * u) ** 0.6;
       const idle = reduced ? 0.012
         : 0.016 + Math.sin(u * 9.4 + t / 38) * 0.011
-                + Math.sin(u * 23  - t / 57) * 0.005;       // 雙頻遊走微波
+                + Math.sin(u * 23  - t / 57) * 0.005;
       const sm = (amp[Math.max(0,i-1)] + amp[i]*2 + amp[Math.min(N-1,i+1)]) / 4;
       A[i] = (Math.pow(sm, 0.85) + idle) * taper * maxH;
     }
-    const ink = getComputedStyle(document.body).getPropertyValue("--ink").trim();
-    const pine = getComputedStyle(document.body).getPropertyValue("--pine").trim();
-    for (const pass of [0, 1]) {          // 0=墨段 1=綠段, 分色繪製
+
+    // ── 漣漪: 事件激起的行波沿線擴散, 對線形注入局部隆起 ──
+    for (let r = ripples.length - 1; r >= 0; r--) {
+      const rp = ripples[r];
+      rp.age += 1;
+      const life = 90, k = rp.age / life;
+      if (k >= 1) { ripples.splice(r, 1); continue; }
+      const spread = 0.04 + k * 0.34;          // 波前位置 (0..1 寬度)
+      const gain = (1 - k) ** 2 * h * 0.13;
+      for (let i = 0; i < N; i++) {
+        const u = i / (N - 1);
+        const d = Math.abs(u - rp.x);
+        // 雙側行波: 高斯包絡跟隨波前
+        const wave = Math.exp(-((d - spread) ** 2) / 0.0016);
+        A[i] += wave * gain * Math.sin(Math.PI * Math.min(1, u) ) ** 0.3;
+      }
+    }
+
+    // ── 閒置墨滴: 久靜時一滴墨落下, 觸線激起微瀾 ──
+    const isQuiet = (mode === "listening") && glow < 0.05;
+    quietFrames = isQuiet ? quietFrames + 1 : 0;
+    if (!reduced && drop === null && quietFrames > nextDropAt) {
+      drop = { x: 0.25 + Math.random() * 0.5, y: -h * 0.45, vy: 0 };
+      quietFrames = 0;
+      nextDropAt = 800 + Math.random() * 700;  // 13~25s 隨機
+    }
+    if (drop) {
+      drop.vy += h * 0.0011;                   // 重力
+      drop.y += drop.vy;
+      const i = Math.floor(drop.x * (N - 1));
+      const lineY = -A[i];                     // 相對 mid
+      if (drop.y >= lineY) {                   // 觸線
+        ripples.push({x: drop.x, age: 0, hue: "ink"});
+        drop = null;
+      }
+    }
+
+    // ── 光暈層: 模糊的雙色描邊, 透明度由能量呼吸 ──
+    if (glow > 0.02 && !reduced) {
+      const userVoice = hue[N-1] > 0.5;
+      const ga = cssVar("--glow-a"), gb = cssVar("--glow-b");
+      const drift = (Math.sin(t / 120) + 1) / 2;       // 雙色緩慢流動
+      const grad = ctx.createLinearGradient(0, 0, w, 0);
+      if (userVoice) {                                  // 你: 松綠為主
+        grad.addColorStop(0, ga); grad.addColorStop(1, ga);
+      } else {                                          // 助手: 金綠互滲
+        grad.addColorStop(0, drift > .5 ? gb : ga);
+        grad.addColorStop(.5, drift > .5 ? ga : gb);
+        grad.addColorStop(1, drift > .5 ? gb : ga);
+      }
+      ctx.save();
+      ctx.filter = `blur(${7 * dpr}px)`;
+      ctx.globalAlpha = Math.min(0.6, glow * 0.55);
+      ctx.beginPath();
+      for (let i = 0; i < N; i++) {
+        const x = (i / (N - 1)) * w;
+        i ? ctx.lineTo(x, mid - A[i]) : ctx.moveTo(x, mid - A[i]);
+      }
+      for (let i = N - 1; i >= 0; i--) {
+        ctx.lineTo(((i / (N - 1)) * w), mid + A[i]);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 5 * dpr;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ── 墨線本體: 分色繪製 (墨段 / 松綠段) ──
+    const ink = cssVar("--ink"), pine = cssVar("--pine");
+    for (const pass of [0, 1]) {
       ctx.beginPath();
       let drawing = false;
       for (let i = 0; i < N; i++) {
@@ -235,7 +377,6 @@ const trace = (() => {
         if (!drawing) { ctx.moveTo(x, mid - A[i]); drawing = true; }
         else ctx.lineTo(x, mid - A[i]);
       }
-      // 下半鏡像
       drawing = false;
       for (let i = N - 1; i >= 0; i--) {
         if ((hue[i] > 0.5 ? 1 : 0) !== pass) { drawing = false; continue; }
@@ -258,18 +399,44 @@ const trace = (() => {
       ctx.arc(x, mid - A[i], 2.6 * dpr, 0, Math.PI * 2);
       ctx.fillStyle = ink; ctx.fill();
     }
+
+    // 漣漪波前: 一對淡色光點隨波擴散
+    for (const rp of ripples) {
+      const life = 90, k = rp.age / life;
+      const spread = 0.04 + k * 0.34;
+      const col = rp.hue === "pine" ? pine
+                : rp.hue === "gold" ? cssVar("--gold")
+                : rp.hue === "clay" ? cssVar("--clay") : ink;
+      ctx.globalAlpha = (1 - k) * 0.5;
+      for (const side of [-1, 1]) {
+        const u = Math.min(1, Math.max(0, rp.x + side * spread));
+        const i = Math.floor(u * (N - 1));
+        ctx.beginPath();
+        ctx.arc(u * w, mid - A[i], 1.8 * dpr, 0, Math.PI * 2);
+        ctx.fillStyle = col; ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 下落中的墨滴
+    if (drop) {
+      ctx.beginPath();
+      ctx.arc(drop.x * w, mid + drop.y, 1.9 * dpr, 0, Math.PI * 2);
+      ctx.fillStyle = ink; ctx.globalAlpha = 0.7; ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
   return {
-    setMicChunk(i16){                      // 從上行音頻幀計算 RMS
+    setMicChunk(i16){
       let s = 0;
       for (let i = 0; i < i16.length; i += 8) { const v = i16[i]/32768; s += v*v; }
       const rms = Math.sqrt(s / (i16.length / 8));
       if (rms > micLevel) micLevel = rms;
     },
-    attachOutput(ctxA, node){              // 播放端接 Analyser
+    attachOutput(ctxA, node){
       analyser = ctxA.createAnalyser();
       analyser.fftSize = 512;
       anaBuf = new Float32Array(analyser.fftSize);
@@ -277,61 +444,124 @@ const trace = (() => {
       analyser.connect(ctxA.destination);
       return analyser;
     },
-    set vad(v){ vadOn = v; },
-    set mode(m){ mode = m; },
+    ripple(hue, x){                        // 事件 API: 激起一道漣漪
+      if (reduced) return;
+      ripples.push({x: x ?? (hue === "pine" ? 0.2 : 0.8), age: 0, hue});
+      if (ripples.length > 6) ripples.shift();
+    },
+    set vad(v){
+      if (v && !vadOn) this.ripple("pine", 0.2);   // 你開口: 松綠漣漪
+      vadOn = v;
+    },
+    set mode(m){
+      if (m === "speaking" && mode !== "speaking")
+        this.ripple("gold", 0.8);                  // 助手開口: 暮金漣漪
+      mode = m;
+    },
   };
 })();
 
-/* ════════ 播放隊列 (可打斷) ════════ */
-let outBus = null;                         // GainNode → Analyser → destination
+/* ════════ 播放隊列:抖動緩衝 + 無爆音打斷 + done 去抖 ════════
+   接縫處理三件事:
+   1. 抖動緩衝 — 一輪的首塊預留 100ms 提前量;途中斷流(生成偶慢於
+      播放)後恢復時補 60ms 提前量,並對新塊做 3ms 淡入,杜絕爆音。
+   2. 打斷淡出 — flush 先把總線增益 18ms 指數衰減到零再停源,
+      barge-in 聽感是「呼吸般讓位」而非「掐斷」。
+   3. playback_done 去抖 — 只有服務端已宣告 assistant_done 且播放
+      源真正排空,才上報;塊間空隙不再誤觸發字幕定格/狀態誤切。     */
+let outBus = null;
 const player = {
-  playhead: 0, sources: new Set(),
+  playhead: 0, sources: new Set(), streamDone: true,
   enqueue(pcmBytes) {
     const i16 = new Int16Array(pcmBytes);
     const f32 = new Float32Array(i16.length);
     for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    const gap = this.playhead < audioCtx.currentTime;       // 斷流恢復?
+    if (gap) {
+      const ramp = Math.min(72, f32.length);                // 3ms @24k 淡入
+      for (let i = 0; i < ramp; i++) f32[i] *= i / ramp;
+    }
     const buf = audioCtx.createBuffer(1, f32.length, outputSR);
     buf.copyToChannel(f32, 0);
     const src = audioCtx.createBufferSource();
     src.buffer = buf; src.connect(outBus);
-    const t = Math.max(audioCtx.currentTime + 0.04, this.playhead);
+    const lead = this.sources.size === 0 ? 0.10 : 0.04;     // 抖動提前量
+    const t = Math.max(audioCtx.currentTime + lead, this.playhead);
     src.start(t);
     this.playhead = t + buf.duration;
     this.sources.add(src);
     src.onended = () => {
       this.sources.delete(src);
-      if (this.sources.size === 0) {
+      if (this.sources.size === 0 && this.streamDone) {
         send({type: "playback_done"});
         finishPartial(false);
       }
     };
   },
-  flush() {  // barge-in: 立即靜音
-    for (const s of this.sources) { s.onended = null; try{s.stop()}catch(_){} }
+  markTurnStart(){ this.streamDone = false; },
+  markStreamDone(){
+    this.streamDone = true;
+    if (this.sources.size === 0) {                          // 音頻早已播完
+      send({type: "playback_done"});
+      finishPartial(false);
+    }
+  },
+  flush() {
+    const now = audioCtx ? audioCtx.currentTime : 0;
+    if (outBus) {
+      outBus.gain.cancelScheduledValues(now);
+      outBus.gain.setTargetAtTime(0, now, 0.018);           // ~18ms 淡出
+    }
+    const doomed = [...this.sources];
     this.sources.clear();
     this.playhead = 0;
+    this.streamDone = true;
+    setTimeout(() => {
+      for (const s of doomed) { s.onended = null; try{s.stop()}catch(_){} }
+      if (outBus && audioCtx)
+        outBus.gain.setValueAtTime(1, audioCtx.currentTime); // 復位
+    }, 90);
   }
 };
 
-/* ════════ 麥克風採集: AudioWorklet → 16kHz PCM16 ════════ */
+/* ════════ 麥克風採集: AudioWorklet → 16kHz PCM16 ════════
+   降採樣帶抗混疊: 對每個輸出樣本取源窗口平均 (48k→16k 即 3:1 boxcar),
+   替代原先的「丟樣本」抽取 —— 丟樣本會把高頻折疊進語音帶, 直接拖低
+   whisper 識別率與起始詞的可辨識度。                                  */
 const WORKLET = `
 class Capture extends AudioWorkletProcessor {
-  constructor(){ super(); this.ratio = sampleRate / 16000; this.acc = 0; this.buf = []; }
+  constructor(){
+    super();
+    this.ratio = sampleRate / 16000;   // 48k→3.0, 44.1k→2.756...
+    this.pos = 0;                      // 源流中的小數讀取位置
+    this.carry = new Float32Array(0);  // 跨回調殘留樣本
+    this.buf = [];
+  }
   process(inputs){
     const ch = inputs[0][0];
     if (!ch) return true;
-    for (let i = 0; i < ch.length; i++) {
-      this.acc += 1;
-      if (this.acc >= this.ratio) {
-        this.acc -= this.ratio;
-        let v = Math.max(-1, Math.min(1, ch[i]));
-        this.buf.push(v * 32767 | 0);
-        if (this.buf.length >= 1024) {  // 64ms 一包
-          this.port.postMessage(Int16Array.from(this.buf).buffer, []);
-          this.buf.length = 0;
-        }
+    // 拼接殘留 + 本回調樣本
+    const src = new Float32Array(this.carry.length + ch.length);
+    src.set(this.carry); src.set(ch, this.carry.length);
+    let pos = this.pos;
+    const r = this.ratio;
+    while (pos + r <= src.length) {
+      // 抗混疊: [pos, pos+r) 窗口平均 (整數比即 boxcar 低通)
+      const i0 = Math.floor(pos), i1 = Math.floor(pos + r);
+      let s = 0;
+      for (let i = i0; i < i1; i++) s += src[i];
+      let v = Math.max(-1, Math.min(1, s / (i1 - i0)));
+      this.buf.push(v * 32767 | 0);
+      if (this.buf.length >= 1024) {   // 64ms 一包
+        this.port.postMessage(Int16Array.from(this.buf).buffer, []);
+        this.buf.length = 0;
       }
+      pos += r;
     }
+    // 保留未消費尾部
+    const keep = Math.floor(pos);
+    this.carry = src.slice(keep);
+    this.pos = pos - keep;
     return true;
   }
 }
@@ -342,7 +572,7 @@ async function startAudio() {
   outBus = audioCtx.createGain();
   trace.attachOutput(audioCtx, outBus);
   micStream = await navigator.mediaDevices.getUserMedia({audio: {
-    echoCancellation: true,   // 打斷不誤觸發的第一道防線
+    echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
     channelCount: 1,
@@ -389,8 +619,9 @@ function connect() {
       case "turn_latency":     pendingLatency = m.ms; break;
       case "assistant_delta":   appendAssistantDelta(m.text, m.proactive); break;
       case "assistant_sentence": appendAssistantDelta(m.text, m.proactive); break;
-      case "assistant_done":   /* 等播放結束時 finishPartial */ break;
-      case "interrupt":        player.flush(); finishPartial(true); break;
+      case "assistant_done":   player.markStreamDone(); break;
+      case "interrupt":        trace.ripple("clay", 0.5);
+                               player.flush(); finishPartial(true); break;
       case "history_cleared":  logEl.innerHTML = ""; break;
       case "error":            addTurn("sys", "系統", m.message); break;
     }
@@ -407,11 +638,12 @@ const STATES = {
 function setState(s) {
   trace.mode = s;
   const [zh, en] = STATES[s] || [s, s];
-  const row = $("stateRow");
+  const row = $("stateRow"), pill = $("statePill");
   row.classList.add("swap");
   setTimeout(() => {
     $("stateZh").textContent = zh;
     $("stateEn").textContent = en;
+    pill.className = "state-pill " + s;
     row.classList.remove("swap");
   }, 180);
 }
@@ -429,6 +661,7 @@ let partialAI = null, pendingLatency = null;
 let captionQueue = [], captionTimer = null;
 function ensureAssistantTurn(proactive) {
   if (!partialAI) {
+    player.markTurnStart();                       // done 去抖: 新一輪開始
     partialAI = addTurn("ai partial", "助手", "");
     captionQueue = [];
     if (captionTimer) { clearTimeout(captionTimer); captionTimer = null; }
@@ -440,10 +673,18 @@ function ensureAssistantTurn(proactive) {
     }
     if (pendingLatency != null) {
       const lat = document.createElement("span");
-      lat.className = "lat";
-      lat.textContent = (pendingLatency/1000).toFixed(1) + "s";
+      lat.className = "lat" + (pendingLatency <= 900 ? " fast"
+                              : pendingLatency > 1800 ? " slow" : "");
       who.appendChild(lat);
-      pendingLatency = null;
+      // 數字滾動: 0 → 實測值, 隨字幕同步浮現
+      const target = pendingLatency; pendingLatency = null;
+      const t0 = performance.now(), dur = 480;
+      (function tick(){
+        const k = Math.min(1, (performance.now() - t0) / dur);
+        const eased = 1 - (1 - k) ** 3;
+        lat.textContent = (target * eased / 1000).toFixed(1) + "s";
+        if (k < 1) requestAnimationFrame(tick);
+      })();
     }
   }
   return partialAI;
@@ -507,7 +748,7 @@ function finishPartial(interrupted) {
 
 /* ════════ 入口 ════════ */
 $("btnStart").onclick = async () => {
-  if (started) {                       // 已運行 → 切換靜音
+  if (started) {
     muted = !muted;
     $("btnStart").textContent = muted ? "恢復聆聽" : "靜音";
     $("btnStart").classList.toggle("primary", !muted);
@@ -537,7 +778,7 @@ $("textInput").addEventListener("keydown", e => {
   const text = e.target.value.trim();
   if (!text) return;
   e.target.value = "";
-  player.flush(); finishPartial(true);   // 打字視同搶話
+  player.flush(); finishPartial(true);
   send({type: "text_input", text});
 });
 

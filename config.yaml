@@ -2,13 +2,14 @@
 # voice_assistant_v2 配置
 # 硬件目標: RTX 4060 (8GB VRAM) / 64GB RAM
 #
-# VRAM 預算 (preset: balanced):
-#   CSM-1B (bf16) + Mimi codec   ~ 4.3 GB   (GPU)
-#   faster-whisper small (int8)  ~ 0   GB   (CPU, 64GB RAM 足夠)
-#   Silero VAD                   ~ 0   GB   (CPU)
-#   LLM (Ollama qwen2.5:3b)      ~ 2.2 GB   (GPU, 由 Ollama 管理)
+# VRAM 預算 (當前默認: kyutai + llama.cpp + turbo ASR):
+#   Kyutai TTS 1.6B (bf16, n_q=16)        ~ 3.5 GB
+#   whisper large-v3-turbo (int8_float16) ~ 1.5 GB
+#   llama.cpp qwen 2B Q4 (-ngl 99 -c 4096)~ 1.7 GB (權重1.4+KV0.3)
+#   Silero VAD                             ~ 0   GB (CPU)
 #   ------------------------------------------------
-#   合計                          ~ 6.5 GB  → 留 ~1.5GB 餘量給 KV cache
+#   合計                                   ~ 6.7 GB → 餘量 ~1.3GB
+#   吃緊回退: asr.model→medium(-0.3GB) 或 llama-server 減 -ngl
 # ============================================================
 
 server:
@@ -21,32 +22,53 @@ audio:
   frame_ms: 32                  # 上行音頻幀長 (512 samples @ 16kHz)
 
 vad:
-  threshold: 0.55               # 語音概率閾值
-  min_speech_ms: 250            # 連續語音超過此時長 → 確認用戶在說話
+  threshold: 0.55               # 嚴格閾值: 打斷檢測 (barge-in) 按此計時, 抗回聲
+  onset_threshold: 0.40         # ★起始點: 進入語音的低門檻 — 輕聲起音不再被裁
+  release_threshold: 0.35       # 句中維持的低門檻 — 弱輔音不致誤斷 (遲滯)
+  min_speech_ms: 250            # 連續語音超過此時長 → 確認用戶在說話 (過濾低閾值誤觸)
   min_silence_ms: 320           # 端點判定: 320ms 是 Silero 穩定性與自然停頓的折中
   fast_min_silence_ms: 192      # 正常長句已穩定後, 用短靜音快速結束
   fast_endpoint_after_ms: 900   # 短於此值仍使用保守 min_silence_ms, 避免截斷短停頓
-  barge_in_speech_ms: 256       # AI 說話時更快接受打斷
-                                # (比 min_speech_ms 略高, 抗回聲誤觸發)
-  pre_roll_ms: 240              # 語音起點前保留的緩衝, 避免吃掉首字
+  barge_in_speech_ms: 256      # AI 說話時更快接受打斷 (嚴格閾值計時)
+  pre_roll_ms: 480              # ★起始點: 240→480, 覆蓋「閾值前弱起音+確認窗」全程;
+                                # 段間不再清空 pre-roll, 緊接的下一句也有起點緩衝
 
 asr:
-  model: "small"                # tiny / base / small / medium / large-v3-turbo
-  device: "cuda"                # GPU ASR: 1.8s 語音實測可由秒級降到數百毫秒
-  compute_type: "float16"       # cpu→int8 / cuda→float16
-  language: null                # null = 自動偵測; 可設 "en" / "zh"
-  beam_size: 1                  # 貪心解碼, 對話場景準確率幾乎無損, 提速 ~30-40%
+  model: "large-v3-turbo"       # ★準確率: 詞錯率約為 small 的一半,
+                                # int8_float16 後 ~1.5GB (small fp16 為 0.9GB)
+                                # 顯存吃緊回退: "medium"+"int8_float16" (~1.2GB) 或 "small"
+  device: "cuda"
+  compute_type: "int8_float16"  # cuda 量化推理; cpu 則用 "int8"
+  language: null                # null = 自動偵測; 固定 "en"/"zh" 可再提準確率
+  beam_size: 3                  # ★免費的準確率: 投機轉寫已把 ASR 移出關鍵路徑,
+                                # beam 的耗時被端點前的靜默期吸收
+  context_bias: true            # ★準確率: 最近對話文本作 initial_prompt 偏置
+  local_files_only: true        # 部署啟動時只讀本地快取; 下載用 scripts/download_models.py
+  fallback_models: ["medium", "small"]  # 目標模型缺快取時的啟動回退
   warmup: true                  # 預熱已加 try/except 保護, 不會再導致啟動崩潰
 
 llm:
-  backend: "ollama"
-  base_url: "http://127.0.0.1:11434"
-  model: "qwen3.5:2b"           # 本機已安裝; 低佔用，適合 8GB VRAM 與 CSM 並行
-  think: false                  # 關閉推理模型的 thinking 欄位，確保語音回答進 content
-  num_gpu: 999                  # 2B LLM 全放 GPU; 仍保留足夠 VRAM 給 CSM + ASR
-  num_batch: 128                # Ollama prompt/decode batch; RTX 4060 上首 token 約省 150-250ms
-  keep_alive: -1                # 常駐內存, 杜絕 Ollama 5 分鐘後卸載→下一輪重載數秒的隨機高延遲
-  # 若想完全不佔 GPU: 在啟動 Ollama 前設 OLLAMA_NUM_GPU=0 (純 CPU, 64GB RAM 無壓力)
+  backend: "llamacpp"           # llamacpp = llama-server (推薦 ★) | vllm | ollama
+                                # 選型 (8GB 與 TTS 同卡, Windows):
+                                #  llama.cpp — Windows 原生, TTFT 低, -ngl/-c 顯存可控
+                                #  vLLM      — 需 WSL, 默認預佔 90% 顯存做 KV,
+                                #              單流小模型場景無優勢; 想試: 把
+                                #              base_url 指向 vLLM 即可 (同一客戶端)
+                                #  ollama    — 多一層調度開銷, 保留兼容
+  base_url: "http://127.0.0.1:8080"
+                                # 啟動: scripts/start_llamacpp.ps1 (推薦旗標見該腳本)
+                                # 或:  llama-server -m <model.gguf> -ngl 99 -c 4096
+                                #      -fa --port 8080 --no-mmap
+  model: "qwen3.5-2b"           # OpenAI 兼容端點下僅作標識; 實際模型由
+                                # llama-server 啟動參數決定 (建議 Q4_K_M GGUF)
+  think: false                  # 經 chat_template_kwargs.enable_thinking=false
+                                # 關閉 Qwen3 系思考段 (llama.cpp / vLLM 均支持)
+  # api_key: ""                 # vLLM 啟用鑒權時填寫
+  # ---- 以下僅 backend: ollama 時生效 ----
+  num_gpu: 999
+  num_batch: 128
+  keep_alive: -1
+  # --------------------------------------
   max_tokens: 32                # 語音回答保持短，降低長尾生成與打斷成本
   temperature: 0.4
   system_prompt: |
@@ -116,6 +138,8 @@ tts:
 
 pipeline:
   speculative_asr: true         # 句中靜音 ~180ms 即投機轉寫 → 端點時 ASR≈0ms
+  speculative_llm: true         # 投機轉寫完成即預啟動 LLM 流 → 端點時首塊已在路上
+                                # (用戶續說則與投機轉寫一同作廢; LLM 移出關鍵路徑)
   semantic_endpoint: true       # 投機文本以句末標點收尾 → 提前端點, 再省 ~200ms
   instant_ack_enabled: false    # 默認不插入固定 ACK; 需要極低感知首音時再開
   instant_ack_text: ""
@@ -131,16 +155,24 @@ pipeline:
 conversation:
   max_history_turns: 12         # 文本歷史輪數上限
   greeting: "Hey, it's Rae. What's going on?"
-  greet_on_connect: true
+  greet_on_connect: false
 
 proactive:
   enabled: true                 # 靜默時由 AI 自主決定是否開口 (Sesame 式主動性)
-  mode: "model_scheduled"       # model_scheduled = 模型自主排程+預合成 (零延遲, 推薦)
-                                # nudge          = 到點即時詢問 LLM (PASS=沉默)
-  min_wait_s: 6                 # 模型可選等待秒數下限
-  max_wait_s: 120               # 上限 (排程模式)
-  delays_s: [12, 28, 60]        # 退避時間表: 第 1/2/3 次主動發話前需要的靜默秒數
+  mode: "duplex"                # duplex = MiniCPM-o 式決策環 (推薦) ★
+                                #   模型在幀時鐘上自主選擇檢查點; 每個檢查點
+                                #   讀取真實感知 (牆鐘時刻/雙方沉默時長/環境聲
+                                #   存在感/已嘗試次數) 後三選一:
+                                #   SAY=說這句 | WAIT=n 秒後再評估 | SLEEP=等用戶
+                                #   —— 無固定時間表, 間隔逐次由模型決定
+                                # model_scheduled = 回覆後一次性排程+預合成
+                                # nudge           = 固定退避表到點詢問 (最簡)
+  min_wait_s: 6                 # 模型可選等待秒數下限 (兼作 duplex 首個檢查點)
+  max_wait_s: 180               # 模型可選等待秒數上限
+  delays_s: [12, 28, 60]        # (僅 nudge 模式) 固定退避時間表
   max_consecutive: 3            # 用戶無回應時最多連續主動幾次, 之後安靜等待
   cooldown_after_interrupt_s: 20  # 被用戶打斷後, 主動發話至少安靜這麼久
+  # duplex_prompt: |            # 可自訂 duplex 感知提示; 佔位符:
+  #   {clock} {user_s} {ai_s} {ambience} {attempts} {min_wait} {max_wait}
   # nudge_prompt: |             # 可自訂決策提示; {silence_s} 會替換為靜默秒數
   #   [SYSTEM NOTE] ...reply with exactly: PASS

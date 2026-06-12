@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 
 from .config import load_config
 from .pipeline.asr import WhisperASR
-from .pipeline.llm import OllamaLLM
+from .pipeline.llm import BaseLLM, create_llm
 from .pipeline.orchestrator import Session
 from .pipeline.tts import CSMSynthesizer
 from .utils.audio import pcm16_to_float32
@@ -38,7 +38,7 @@ cfg = load_config()
 app = FastAPI(title="voice_assistant_v2")
 
 asr: WhisperASR | None = None
-llm: OllamaLLM | None = None
+llm: BaseLLM | None = None
 tts: CSMSynthesizer | None = None
 
 
@@ -76,16 +76,14 @@ async def startup() -> None:
         compute_type=cfg.asr.compute_type,
         language=cfg.asr.language, beam_size=cfg.asr.beam_size,
         warmup=getattr(cfg.asr, "warmup", True),
+        context_bias=getattr(cfg.asr, "context_bias", True),
+        local_files_only=getattr(
+            cfg.asr, "local_files_only",
+            getattr(cfg.tts, "local_files_only", False),
+        ),
+        fallback_models=getattr(cfg.asr, "fallback_models", ["medium", "small"]),
     )
-    llm = OllamaLLM(
-        base_url=cfg.llm.base_url, model=cfg.llm.model,
-        system_prompt=cfg.llm.system_prompt,
-        max_tokens=cfg.llm.max_tokens, temperature=cfg.llm.temperature,
-        think=getattr(cfg.llm, "think", None),
-        num_gpu=getattr(cfg.llm, "num_gpu", None),
-        num_batch=getattr(cfg.llm, "num_batch", None),
-        keep_alive=getattr(cfg.llm, "keep_alive", None),
-    )
+    llm = create_llm(cfg.llm)
     await llm.warmup()
 
     backend = getattr(cfg.tts, "backend", "csm")
