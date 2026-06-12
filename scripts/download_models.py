@@ -38,5 +38,11 @@ def main() -> None:
     print("\n全部就緒。啟動服務: python -m server.main")
 
 
+def cosyvoice_hint() -> None:
+    print("\nTTS (CosyVoice3): 運行 scripts/setup_cosyvoice.ps1 完成"
+          "倉庫克隆+依賴+權重 (FunAudioLLM/Fun-CosyVoice3-0.5B-2512)")
+
+
 if __name__ == "__main__":
     main()
+    cosyvoice_hint()

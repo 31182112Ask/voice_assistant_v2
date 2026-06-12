@@ -2,14 +2,14 @@
 # voice_assistant_v2 配置
 # 硬件目標: RTX 4060 (8GB VRAM) / 64GB RAM
 #
-# VRAM 預算 (當前默認: kyutai + llama.cpp + turbo ASR):
-#   Kyutai TTS 1.6B (bf16, n_q=16)        ~ 3.5 GB
+# VRAM 預算 (當前默認: cosyvoice3 + llama.cpp + turbo ASR):
+#   CosyVoice3 0.5B (fp16, LM+flow+HiFT)  ~ 2.5 GB
 #   whisper large-v3-turbo (int8_float16) ~ 1.5 GB
 #   llama.cpp qwen 2B Q4 (-ngl 99 -c 4096)~ 1.7 GB (權重1.4+KV0.3)
 #   Silero VAD                             ~ 0   GB (CPU)
 #   ------------------------------------------------
-#   合計                                   ~ 6.7 GB → 餘量 ~1.3GB
-#   吃緊回退: asr.model→medium(-0.3GB) 或 llama-server 減 -ngl
+#   合計                                   ~ 5.7 GB → 餘量 ~2.3GB ★
+#   (比 Kyutai 方案省 ~1GB, 必要時可把 asr 升至非量化 turbo)
 # ============================================================
 
 server:
@@ -95,16 +95,34 @@ llm:
     short answers, and room for the user to interrupt. Never promise to
     do something later unless the user explicitly asked you to.
 
-    Speak English only. If the user writes Chinese, understand it and
-    answer naturally in English.
+    Reply in the language the user is speaking — natural Mandarin for
+    Chinese, natural English for English. Match their language each turn;
+    never translate or repeat yourself bilingually.
 
     If you are asked to schedule a proactive follow-up, obey the exact
     requested format and keep the planned sentence short.
 
 tts:
-  backend: "kyutai"             # kyutai = 幀級流式, 首音 ~0.3s (推薦) ★
-                                # csm    = Sesame CSM-1B, 韻律上下文最強但
-                                #          transformers 實現只能整塊出聲
+  backend: "cosyvoice3"         # cosyvoice3 = 雙向流式, 首包 ~150-250ms,
+                                #   中文+方言+9語言, fp16 僅 ~2.5GB (推薦 ★)
+                                # kyutai = 幀級流式 (英文)
+                                # csm    = Sesame CSM-1B (英文, 韻律上下文)
+  cosyvoice:                    # —— Fun-CosyVoice3-0.5B-2512 (Apache 2.0) ——
+                                # 部署: 運行 scripts/setup_cosyvoice.ps1
+    repo_dir: "third_party/CosyVoice"
+                                # FunAudioLLM/CosyVoice 倉庫位置 (含 Matcha 子模塊)
+    model_dir: "pretrained_models/Fun-CosyVoice3-0.5B"
+    fp16: true
+    speed: 1.0                  # 語速 (0.5~2.0)
+    instruct: "You are a helpful assistant."
+                                # 風格指令, 可加方言/情緒, 例:
+                                # "You are a helpful assistant. 用四川话说。"
+    voice_wav: "voices/ref.wav" # 零樣本克隆音色 (10-30s 乾淨人聲, 16k+)
+    voice_text: "voices/ref.txt"# 其逐字稿 (必填, 影響克隆質量)
+    max_prompt_chars: 0          # 0 = keep full transcript; short truncation was slower
+    warmup_text: "Warm up."
+                                # 缺省時回退官方示例音色
+
   kyutai:                       # —— Kyutai TTS 1.6B (Delayed Streams) ——
                                 # 與 CSM 同用 Mimi codec、同為 transformer→
                                 # 音頻碼路線, 但原生「文本邊進/音頻邊出」

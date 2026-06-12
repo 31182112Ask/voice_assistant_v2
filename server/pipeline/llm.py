@@ -25,9 +25,15 @@ import httpx
 
 log = logging.getLogger("llm")
 
-# 句子邊界: 句末標點後跟空白/結尾。最短句長避免 "Hi." 之類碎片過多佔用 TTS 啟動開銷
-_SENT_RE = re.compile(r"(.+?[.!?…]['\")\]]?)(?:\s+|$)", re.S)
+# 句子邊界: 拉丁句末標點需後跟空白/結尾; CJK 句末標點 (。！？；) 後無空格,
+# 即時成立。最短句長避免碎片過多佔用 TTS 啟動開銷。
+_SENT_RE = re.compile(
+    r"(.+?(?:[.!?…]['\")\]]?(?=\s|$)|[。！？；]['\")\]」』]?))\s*", re.S)
 _MIN_SENT_CHARS = 12
+# 子句邊界 (首塊提前切出用): 拉丁逗號類 + CJK 頓逗冒
+_CLAUSE_RE = re.compile(r"(?:[,;:—–]\s|[，、；：])")
+# 無標點保險: 連續超過此字符數仍無邊界 → 強制切 (主要服務 CJK 長句)
+_FIRST_CHUNK_MAX_CHARS = 30
 
 
 class BaseLLM:
@@ -95,15 +101,19 @@ class BaseLLM:
         m = _SENT_RE.match(buf)
         if m and len(m.group(1).split()) >= 1:
             return m.group(1).strip(), buf[m.end():]
-        cm = re.search(r"[,;:—–]\s", buf)
+        cm = _CLAUSE_RE.search(buf)
         if cm:
             head = buf[: cm.end()].strip()
-            if len(head.split()) >= min_words:
+            # CJK 子句按字符數放行 (split() 對中文無效)
+            if len(head.split()) >= min_words or len(head) >= 2:
                 return head, buf[cm.end():]
         if len(words) > max_words:
             head = " ".join(words[:max_words])
             idx = buf.find(head) + len(head)
             return head.strip(), buf[idx:]
+        # 無標點保險: CJK 長句 / 無標點英文流, 超長即強制切
+        if len(buf) > _FIRST_CHUNK_MAX_CHARS:
+            return buf[:_FIRST_CHUNK_MAX_CHARS].strip(), buf[_FIRST_CHUNK_MAX_CHARS:]
         return None, buf
 
     # ---------------- 共享: 主動性接口 ----------------

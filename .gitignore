@@ -10,5 +10,9 @@ voice_assistant_v2_lowlatency.zip
 voices/*.wav
 voices/*.txt
 models/
+pretrained_models/
+third_party/
+bench/results/
+bench/audio/
 *.log
 .DS_Store

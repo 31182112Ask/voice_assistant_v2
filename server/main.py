@@ -87,6 +87,28 @@ async def startup() -> None:
     await llm.warmup()
 
     backend = getattr(cfg.tts, "backend", "csm")
+    if backend in ("cosyvoice3", "cosyvoice"):
+        try:
+            from .pipeline.tts_cosyvoice import CosyVoiceTTS
+            ccfg = getattr(cfg.tts, "cosyvoice", None)
+            tts = await asyncio.to_thread(
+                CosyVoiceTTS,
+                getattr(ccfg, "repo_dir", "third_party/CosyVoice"),
+                getattr(ccfg, "model_dir",
+                        "pretrained_models/Fun-CosyVoice3-0.5B"),
+                cfg.tts.device,
+                getattr(ccfg, "fp16", True),
+                getattr(ccfg, "speed", 1.0),
+                getattr(ccfg, "instruct", "You are a helpful assistant."),
+                getattr(ccfg, "voice_wav", "voices/ref.wav"),
+                getattr(ccfg, "voice_text", "voices/ref.txt"),
+                ROOT,
+                getattr(ccfg, "max_prompt_chars", 0),
+                getattr(ccfg, "warmup_text", "Warm up."),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("CosyVoice3 後端加載失敗, 回退到 Kyutai: %s", e)
+            backend = "kyutai"
     if backend == "kyutai":
         try:
             from .pipeline.tts_kyutai import KyutaiTTS

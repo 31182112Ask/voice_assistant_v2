@@ -694,6 +694,9 @@ function formatCaptionDelta(base, delta) {
   if (!text) return "";
   if (!base) return text;
   if (/^[,.;:!?，。！？、]/.test(text)) return text;
+  // CJK 銜接處不插空格 (中文塊間無詞距)
+  const cjk = /[\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef]/;
+  if (cjk.test(base.slice(-1)) || cjk.test(text[0])) return text;
   if (/\s$/.test(base) || /^\s/.test(delta || "")) return text;
   return " " + text;
 }

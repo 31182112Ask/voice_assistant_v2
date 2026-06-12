@@ -316,3 +316,25 @@ unanswered proactive turns: 1     ← 已嘗試次數 (自然退避)
 實現為 OpenAI 兼容客戶端 (`OpenAICompatLLM`), llama.cpp 與 vLLM 共用 ——
 想試 vLLM 只需把 `llm.base_url` 指向它。`chat_template_kwargs.
 enable_thinking=false` 兩者均支持, 用於關閉 Qwen3 系思考段。
+
+## 12. TTS: CosyVoice3 雙向流式 (當前默認)
+
+Fun-CosyVoice3-0.5B-2512 (Apache 2.0): Qwen2-0.5B LM → 語音 token →
+DiT 流匹配 (10-step) → HiFT 聲碼器 → 24kHz。官方 Bi-Streaming:
+文本流入 + 音頻流出, 首包 ~150ms。
+
+接入方式 (tts_cosyvoice.py):
+- LLM 塊流 → asyncio 隊列 → 同步文本生成器 → inference_zero_shot
+  的 tts_text 參數 (同一生成態邊收文本邊出音頻)
+- 打斷: interrupt 置位 → 消費循環拋出 → generator.close() 關閉
+  底層 LM/flow 生成釋放 GPU; 文本隊列以 None 哨兵雙保險解除阻塞
+- 音色: voices/ref.wav + ref.txt 零樣本克隆 (prompt_text 格式為
+  "<instruct><|endofprompt|><逐字稿>"), instruct 可附加方言/情緒指令
+
+帶來的能力變化:
+- 中文 (含 18 種方言) + 9 語言語音回覆解鎖; system prompt 已改為
+  「跟隨用戶語言」
+- 切句邏輯升級: CJK 句末標點 (。！？；) 無空格即時成立, 子句含
+  ，、；：, 另有 30 字符無標點保險 —— 否則中文流永遠切不出首塊
+- VRAM: ~2.5GB, 比 Kyutai 方案省 ~1GB (總預算 ~5.7/8GB)
+- kyutai / csm 後端保留, config 一行切換, 加載失敗自動回退
